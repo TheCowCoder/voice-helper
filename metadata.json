@@ -1,0 +1,7 @@
+{
+  "name": "Grandpa's Voice Helper",
+  "description": "An accessible transcription and text-to-speech aid for stroke survivors.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

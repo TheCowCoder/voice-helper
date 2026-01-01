@@ -37,8 +37,21 @@ IMPORTANT: Even though you are set to "thinking mode", DO NOT THINK FOR THIS RES
 // API Endpoint: Transcribe Audio
 app.post('/api/transcribe', async (req, res) => {
   try {
+    // Validate API key and input early to return clear errors for debugging
+    if (!API_KEY) {
+      console.error("Transcription API Error: API_KEY not configured");
+      return res.status(500).json({ error: "API_KEY not configured" });
+    }
+
     const ai = getAiClient();
-    const { base64Audio, mimeType } = req.body;
+    const { base64Audio, mimeType } = req.body || {};
+
+    if (!base64Audio) {
+      console.error("Transcription API Error: missing base64Audio in request body");
+      return res.status(400).json({ error: "base64Audio is required" });
+    }
+
+    console.log(`/api/transcribe received - mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
 
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
@@ -58,16 +71,29 @@ app.post('/api/transcribe', async (req, res) => {
     const text = response.text;
     res.json({ text: text ? text.trim() : "" });
   } catch (error) {
-    console.error("Transcription API Error:", error);
-    res.status(500).json({ error: "Failed to transcribe audio" });
+    console.error("Transcription API Error:", error?.message || error);
+    res.status(500).json({ error: error?.message || "Failed to transcribe audio" });
   }
 });
 
 // API Endpoint: Generate Speech (TTS)
 app.post('/api/tts', async (req, res) => {
   try {
+    // Validate API key and input early
+    if (!API_KEY) {
+      console.error("TTS API Error: API_KEY not configured");
+      return res.status(500).json({ error: "API_KEY not configured" });
+    }
+
     const ai = getAiClient();
-    const { text } = req.body;
+    const { text } = req.body || {};
+
+    if (!text) {
+      console.error("TTS API Error: missing text in request body");
+      return res.status(400).json({ error: "text is required" });
+    }
+
+    console.log(`/api/tts received - textLen=${text.length}`);
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-preview-tts',
@@ -89,8 +115,8 @@ app.post('/api/tts', async (req, res) => {
 
     res.json({ audioData: base64Audio });
   } catch (error) {
-    console.error("TTS API Error:", error);
-    res.status(500).json({ error: "Failed to generate speech" });
+    console.error("TTS API Error:", error?.message || error);
+    res.status(500).json({ error: error?.message || "Failed to generate speech" });
   }
 });
 

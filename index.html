@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Voice Helper</title>
     <!-- We keep Tailwind CDN for simplicity, though you could install it via npm too -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -37,7 +37,7 @@
 </script>
 <link rel="stylesheet" href="/index.css">
 </head>
-  <body class="bg-slate-50 text-slate-900 h-screen w-screen overflow-hidden">
+  <body class="bg-slate-50 text-slate-900 min-h-screen w-screen overflow-y-auto">
     <div id="root" class="h-full w-full"></div>
     <!-- Vite Entry Point -->
     <script type="module" src="/index.tsx"></script>

@@ -74,11 +74,11 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 p-4 sm:p-6 md:p-8 max-w-4xl mx-auto">
+    <div className="flex flex-col min-h-screen bg-slate-50 p-4 sm:p-6 md:p-8 max-w-4xl mx-auto">
       
       {/* Header */}
       <header className="mb-6 flex justify-between items-center">
-        <h1 className="text-3xl font-bold text-slate-800">Voice Helper</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">Voice Helper</h1>
         {appState !== AppState.IDLE && (
           <button 
             onClick={handleReset}
@@ -104,7 +104,7 @@ const App: React.FC = () => {
         {/* State: IDLE or RECORDING */}
         {(appState === AppState.IDLE || appState === AppState.RECORDING) && (
           <div className="flex flex-col items-center gap-8 animate-in fade-in duration-500">
-             <div className="text-3xl sm:text-4xl text-center font-medium text-slate-600 max-w-lg leading-relaxed">
+             <div className="text-2xl sm:text-3xl text-center font-medium text-slate-600 max-w-lg leading-relaxed">
               {appState === AppState.IDLE 
                 ? "Press the button below to start recording." 
                 : "Listening... Press again to stop."}
@@ -138,7 +138,7 @@ const App: React.FC = () => {
               onClick={handlePlay}
               disabled={isPlaying || !transcription}
               className={`
-                w-full py-8 rounded-3xl shadow-xl flex items-center justify-center gap-4 transition-all transform active:scale-[0.98]
+                w-full py-4 sm:py-8 rounded-3xl shadow-xl flex items-center justify-center gap-4 transition-all transform active:scale-[0.98]
                 ${isPlaying 
                   ? 'bg-green-600 cursor-wait' 
                   : 'bg-green-500 hover:bg-green-600'}
@@ -147,13 +147,13 @@ const App: React.FC = () => {
             >
               {isPlaying ? (
                 <>
-                  <Loader2 size={48} className="animate-spin text-white" />
-                  <span className="text-4xl font-bold text-white tracking-wide">Speaking...</span>
+                  <Loader2 className="w-12 h-12 sm:w-12 sm:h-12 animate-spin text-white" />
+                  <span className="text-2xl sm:text-4xl font-bold text-white tracking-wide">Speaking...</span>
                 </>
               ) : (
                 <>
-                  <Volume2 size={48} className="text-white fill-current" />
-                  <span className="text-4xl font-bold text-white tracking-wide">Play Voice</span>
+                  <Volume2 className="w-12 h-12 sm:w-12 sm:h-12 text-white fill-current" />
+                  <span className="text-2xl sm:text-4xl font-bold text-white tracking-wide">Play Voice</span>
                 </>
               )}
             </button>
@@ -163,7 +163,7 @@ const App: React.FC = () => {
       </main>
       
       {/* Footer / Status Bar */}
-      <footer className="mt-6 text-center text-slate-400 text-2xl font-medium uppercase tracking-widest">
+      <footer className="mt-6 text-center text-slate-400 text-sm sm:text-2xl font-medium uppercase tracking-widest">
         {appState === AppState.IDLE && "Ready"}
         {appState === AppState.RECORDING && <span className="text-red-500">Recording in progress</span>}
         {appState === AppState.TRANSCRIBING && "Connecting to Gemini..."}

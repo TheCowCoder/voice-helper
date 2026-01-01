@@ -14,7 +14,7 @@ export const RecordButton: React.FC<RecordButtonProps> = ({ isRecording, onClick
       disabled={disabled}
       className={`
         relative group flex items-center justify-center
-        w-64 h-64 rounded-full shadow-2xl transition-all duration-300 transform active:scale-95
+        w-48 h-48 sm:w-64 sm:h-64 rounded-full shadow-2xl transition-all duration-300 transform active:scale-95
         ${disabled ? 'opacity-50 cursor-not-allowed bg-gray-200' : ''}
         ${isRecording 
           ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
@@ -28,12 +28,12 @@ export const RecordButton: React.FC<RecordButtonProps> = ({ isRecording, onClick
       <div className="flex flex-col items-center text-white">
         {isRecording ? (
           <>
-            <Square size={80} fill="currentColor" />
+            <Square className="w-20 h-20 sm:w-24 sm:h-24" fill="currentColor" />
             <span className="mt-2 text-2xl font-bold uppercase tracking-widest">Stop</span>
           </>
         ) : (
           <>
-            <Mic size={80} />
+            <Mic className="w-20 h-20 sm:w-24 sm:h-24" />
             <span className="mt-2 text-2xl font-bold uppercase tracking-widest">Record</span>
           </>
         )}

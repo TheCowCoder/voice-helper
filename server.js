@@ -32,6 +32,7 @@ const getAiClient = () => {
 const PROMPT_TEXT = `
 Transcribe this recording of my grandpa. Do your best to interpret what he is most likely trying to say as he has had stroke and has impaired speech.
 IMPORTANT: Even though you are set to "thinking mode", DO NOT THINK FOR THIS RESPONSE! Simply come up with a transcription and output it in 1 step. Respond ONLY with the estimated transcription, with no additional commentary or thinking/reasoning.
+**I WANT YOU TO MINIMIZE PROCESSING TIME!** Come up with a transcription with the least thinking possible (in the least amount of time possible).
 `;
 
 // API Endpoint: Transcribe Audio

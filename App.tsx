@@ -127,7 +127,7 @@ const App: React.FC = () => {
 
         {/* State: REVIEW or PLAYING */}
         {(appState === AppState.REVIEW || appState === AppState.PLAYING) && (
-          <div className="w-full self-stretch flex-1 min-h-0 flex flex-col gap-6 overflow-auto animate-in slide-in-from-bottom-10 duration-500">
+          <div className="w-full h-full flex flex-col gap-6 animate-in slide-in-from-bottom-10 duration-500">
             
             <TranscriptionDisplay 
               text={transcription} 

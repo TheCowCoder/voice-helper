@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 
 interface UseAudioRecorderReturn {
   isRecording: boolean;
@@ -10,47 +10,13 @@ interface UseAudioRecorderReturn {
 export const useAudioRecorder = (): UseAudioRecorderReturn => {
   const [isRecording, setIsRecording] = useState(false);
   const [permissionError, setPermissionError] = useState(false);
-  const [permissionState, setPermissionState] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // On mount, query permission status if available and persist change
-  useEffect(() => {
-    let statusObj: PermissionStatus | null = null;
-    const check = async () => {
-      try {
-        if ((navigator as any).permissions && (navigator as any).permissions.query) {
-          statusObj = await (navigator as any).permissions.query({ name: 'microphone' });
-          setPermissionState(statusObj.state ?? 'unknown');
-          statusObj.onchange = () => setPermissionState(statusObj?.state ?? 'unknown');
-        } else {
-          const stored = localStorage.getItem('micPermission');
-          if (stored === 'granted') setPermissionState('granted');
-        }
-      } catch (e) {
-        // ignore - permissions API not supported
-      }
-    };
-    check();
-    return () => {
-      if (statusObj) statusObj.onchange = null;
-    };
-  }, []);
-
   const startRecording = useCallback(async () => {
     try {
-      // If known denied, short-circuit and show error instead of causing another prompt
-      if (permissionState === 'denied') {
-        setPermissionError(true);
-        throw new Error('Microphone permission denied');
-      }
-
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Save that user granted permission so some browsers host UIs can be less aggressive
-      try { localStorage.setItem('micPermission', 'granted'); } catch (e) {}
-      setPermissionState('granted');
-      setPermissionError(false);
-
+      
       // Determine supported mime type
       let mimeType = 'audio/webm';
       if (MediaRecorder.isTypeSupported('audio/webm')) {
@@ -72,15 +38,11 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
       mediaRecorder.start();
       setIsRecording(true);
       setPermissionError(false);
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error accessing microphone:", err);
       setPermissionError(true);
-      if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
-        try { localStorage.setItem('micPermission', 'denied'); } catch (e) {}
-        setPermissionState('denied');
-      }
     }
-  }, [permissionState]);
+  }, []);
 
   const stopRecording = useCallback((): Promise<Blob | null> => {
     return new Promise((resolve) => {

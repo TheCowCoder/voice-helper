@@ -1,4 +1,3 @@
---- START OF FILE utils__audioUtils.ts ---
 
 /**
  * Converts a Blob to a Base64 string.

@@ -5,9 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "server": "node server.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\""
-
+    "start": "node server.js"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",

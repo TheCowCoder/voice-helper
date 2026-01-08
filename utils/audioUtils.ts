@@ -4,8 +4,7 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
     const reader = new FileReader();
     reader.onloadend = () => {
       const result = reader.result as string;
-      const base64 = result.split(',')[1];
-      resolve(base64);
+      resolve(result.split(',')[1]);
     };
     reader.onerror = reject;
     reader.readAsDataURL(blob);
@@ -28,36 +27,30 @@ function createWavHeader(dataLength: number): Uint8Array {
   const writeString = (offset: number, s: string) => {
     for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
   };
-
   writeString(0, 'RIFF');
   view.setUint32(4, 36 + dataLength, true);
   writeString(8, 'WAVE');
   writeString(12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // Mono
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true);
   view.setUint16(34, 16, true);
   writeString(36, 'data');
   view.setUint32(40, dataLength, true);
-
   return new Uint8Array(header);
 }
 
-/**
- * Plays Audio while forcing Loudspeaker output on iOS.
- */
 export const playAudioFromBase64 = async (base64Audio: string): Promise<void> => {
-  // 1. KICK iOS SESSION: Force the browser to switch from 'communication' to 'playback'
-  // This is the most important line for fixing the earpiece issue.
+  // Force iOS to use the 'playback' category (Loudspeaker) instead of 'communication' (Earpiece)
   if ('audioSession' in navigator) {
     try {
-      // @ts-ignore - type is a newer property
+      // @ts-ignore
       await (navigator as any).audioSession.setCategory('playback');
     } catch (e) {
-      console.warn("Could not set audio session category", e);
+      console.warn(e);
     }
   }
 
@@ -67,26 +60,15 @@ export const playAudioFromBase64 = async (base64Audio: string): Promise<void> =>
       const wavHeader = createWavHeader(pcmData.length);
       const wavBlob = new Blob([wavHeader, pcmData], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(wavBlob);
-
       const audio = new Audio(audioUrl);
       
-      // Ensure it's not muted by some internal state
-      audio.muted = false;
       audio.volume = 1.0;
-
       audio.onended = () => {
         URL.revokeObjectURL(audioUrl);
         resolve();
       };
-
-      audio.onerror = (e) => {
-        URL.revokeObjectURL(audioUrl);
-        reject(e);
-      };
-
-      // iOS allows playback here because this is called within a button click event
+      audio.onerror = reject;
       audio.play().catch(reject);
-
     } catch (error) {
       reject(error);
     }

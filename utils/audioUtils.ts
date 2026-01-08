@@ -1,3 +1,4 @@
+--- START OF FILE utils__audioUtils.ts ---
 
 /**
  * Converts a Blob to a Base64 string.
@@ -29,61 +30,100 @@ function decodeBase64(base64: string): Uint8Array {
 }
 
 /**
- * Plays PCM or WAV audio data from a base64 string.
- * This handles the raw 24kHz PCM data that Gemini returns.
+ * Creates a standard WAV header for the raw PCM data.
+ * Gemini 2.0 Flash Exp defaults to: 24000Hz, 1 Channel, 16-bit PCM.
  */
-export const playAudioFromBase64 = async (base64Audio: string): Promise<void> => {
-  try {
-    // 1. Initialize Audio Context (Standard or Webkit for iOS)
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    const audioContext = new AudioContextClass({ sampleRate: 24000 }); // Gemini defaults to 24kHz
-    
-    // 2. Decode Base64
-    const byteData = decodeBase64(base64Audio);
+function createWavHeader(dataLength: number, sampleRate: number = 24000): Uint8Array {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const byteRate = sampleRate * blockAlign;
+  const headerSize = 44;
+  const wavLength = headerSize + dataLength;
 
-    // 3. Helper to decode raw PCM if standard decoding fails
-    // Gemini often sends raw PCM without WAV headers
-    const decodePCM = (data: Uint8Array, ctx: AudioContext) => {
-        const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
-        const frameCount = dataInt16.length;
-        const buffer = ctx.createBuffer(1, frameCount, 24000);
-        const channelData = buffer.getChannelData(0);
-        
-        for (let i = 0; i < frameCount; i++) {
-            // Convert Int16 to Float32
-            channelData[i] = dataInt16[i] / 32768.0;
-        }
-        return buffer;
-    };
+  const buffer = new ArrayBuffer(headerSize);
+  const view = new DataView(buffer);
 
-    let audioBuffer: AudioBuffer;
+  // RIFF identifier
+  writeString(view, 0, 'RIFF');
+  // RIFF chunk length
+  view.setUint32(4, 36 + dataLength, true);
+  // RIFF type
+  writeString(view, 8, 'WAVE');
+  // format chunk identifier
+  writeString(view, 12, 'fmt ');
+  // format chunk length
+  view.setUint32(16, 16, true);
+  // sample format (raw)
+  view.setUint16(20, 1, true);
+  // channel count
+  view.setUint16(22, numChannels, true);
+  // sample rate
+  view.setUint32(24, sampleRate, true);
+  // byte rate (sample rate * block align)
+  view.setUint32(28, byteRate, true);
+  // block align (channel count * bytes per sample)
+  view.setUint16(32, blockAlign, true);
+  // bits per sample
+  view.setUint16(34, bitsPerSample, true);
+  // data chunk identifier
+  writeString(view, 36, 'data');
+  // data chunk length
+  view.setUint32(40, dataLength, true);
 
+  return new Uint8Array(buffer);
+}
+
+function writeString(view: DataView, offset: number, string: string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+/**
+ * Plays Audio.
+ * Converts Raw PCM -> WAV -> Blob -> HTML5 Audio Element.
+ * This ensures iOS plays it on the Loudspeaker (Media Volume) instead of the Earpiece.
+ */
+export const playAudioFromBase64 = (base64Audio: string): Promise<void> => {
+  return new Promise((resolve, reject) => {
     try {
-        // Try standard decoding (works if Gemini sends WAV header)
-        // Copy buffer to avoid detached array issues
-        const bufferCopy = byteData.buffer.slice(byteData.byteOffset, byteData.byteOffset + byteData.byteLength);
-        audioBuffer = await audioContext.decodeAudioData(bufferCopy);
-    } catch (e) {
-        console.log("Standard decode failed, assuming raw PCM...");
-        audioBuffer = decodePCM(byteData, audioContext);
-    }
+      // 1. Decode the Raw PCM data
+      const pcmData = decodeBase64(base64Audio);
 
-    // 4. Play
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    source.start(0);
+      // 2. Add a WAV header so the browser treats it as a media file
+      const wavHeader = createWavHeader(pcmData.length, 24000); // Gemini is 24kHz
+      
+      // 3. Combine header and data into a Blob
+      const wavBlob = new Blob([wavHeader, pcmData], { type: 'audio/wav' });
+      const audioUrl = URL.createObjectURL(wavBlob);
 
-    return new Promise((resolve) => {
-      source.onended = () => {
-        source.disconnect();
-        audioContext.close(); // Clean up to save memory/battery
+      // 4. Play using standard HTML5 Audio (Routes to Loudspeaker)
+      const audio = new Audio(audioUrl);
+      
+      // Safety: iOS requires volume to be set, though usually it's read-only on hardware
+      audio.volume = 1.0; 
+
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl); // Cleanup memory
         resolve();
       };
-    });
 
-  } catch (error) {
-    console.error("Error playing audio:", error);
-    throw error;
-  }
+      audio.onerror = (e) => {
+        console.error("Audio playback error", e);
+        URL.revokeObjectURL(audioUrl);
+        reject(new Error("Playback failed"));
+      };
+
+      audio.play().catch(err => {
+        console.error("Play prevented by browser:", err);
+        reject(err);
+      });
+
+    } catch (error) {
+      console.error("Error preparing audio:", error);
+      reject(error);
+    }
+  });
 };

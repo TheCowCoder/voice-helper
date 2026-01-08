@@ -3,7 +3,6 @@
   "short_name": "Voice Helper",
   "start_url": "/",
   "scope": "/", 
-  "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#f8fafc",
   "orientation": "portrait",

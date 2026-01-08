@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     proxy: {
       // Proxy API requests to the Express server during development
-      '/api': 'http://localhost:3000'
+      '/api': 'http://localhost:7860'
     }
   }
 });

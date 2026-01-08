@@ -29,10 +29,26 @@ const getAiClient = () => {
     return new GoogleGenAI({ apiKey: API_KEY });
 }
 
+// const PROMPT_TEXT = `
+// Transcribe this recording of my grandpa. Do your best to interpret what he is most likely trying to say as he has had stroke and has impaired speech.
+// IMPORTANT: Even though you are set to "thinking mode", DO NOT THINK FOR THIS RESPONSE! Simply come up with a transcription and output it in 1 step. Respond ONLY with the estimated transcription, with no additional commentary or thinking/reasoning.
+// `;
+
+// const PROMPT_TEXT = `
+// Transcribe this recording of my grandpa. Do your best to interpret what he is most likely trying to say as he has had stroke and has impaired speech.
+// IMPORTANT: Respond ONLY with the estimated transcription, with no additional commentary or thinking/reasoning.
+// `;
+
 const PROMPT_TEXT = `
-Transcribe this recording of my grandpa. Do your best to interpret what he is most likely trying to say as he has had stroke and has impaired speech.
-IMPORTANT: Even though you are set to "thinking mode", DO NOT THINK FOR THIS RESPONSE! Simply come up with a transcription and output it in 1 step. Respond ONLY with the estimated transcription, with no additional commentary or thinking/reasoning.
+Task:
+Transcribe this recording of my grandpa. Do your best to interpret what he is most likely trying to say, as he has had stroke and has impaired speech.
+
+Output rules:
+- Respond ONLY with the estimated transcription.
+- Do NOT include explanations, commentary, reasoning, or extra text.
+- The response must be transcription text only.
 `;
+
 
 // API Endpoint: Transcribe Audio
 app.post('/api/transcribe', async (req, res) => {
@@ -63,7 +79,9 @@ app.post('/api/transcribe', async (req, res) => {
       },
       config: {
         temperature: 1,
-        thinkingConfig: { thinkingBudget: 1024 },
+        // thinkingConfig: { thinkingBudget: 1024 },
+        // thinkingConfig: { thinkingBudget: 768 },
+        thinkingConfig: { thinkingBudget: 1 },
         tools: [],
       },
     });

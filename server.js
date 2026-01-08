@@ -41,7 +41,7 @@ const getAiClient = () => {
 
 const PROMPT_TEXT = `
 Task:
-Transcribe this recording of my grandpa. Do your best to interpret what he is most likely trying to say, as he has had stroke and has impaired speech.
+Transcribe this recording of my grandpa named Satish Bhatt. Do your best to interpret what he is most likely trying to say, as he has had stroke and has impaired speech.
 
 Output rules:
 - Respond ONLY with the estimated transcription.

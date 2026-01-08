@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "server": "node server.js",
     "dev": "vite",
+    "build": "vite build",
+    "server": "node server.js",
     "start": "concurrently \"npm run server\" \"npm run dev\""
+
   },
   "dependencies": {
     "@google/genai": "^1.0.0",

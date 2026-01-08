@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { RotateCcw, Loader2, Volume2 } from 'lucide-react';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { geminiService } from './services/geminiService';
-import { speakText, blobToBase64 } from './utils/audioUtils';
+import { playAudioFromBase64, blobToBase64 } from './utils/audioUtils';
 import { RecordButton } from './components/RecordButton';
 import { TranscriptionDisplay } from './components/TranscriptionDisplay';
 import { AppState } from './types';
@@ -14,7 +14,6 @@ const App: React.FC = () => {
   const { isRecording, startRecording, stopRecording, permissionError } = useAudioRecorder();
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // Handle Record Button Interaction
   const handleRecordToggle = async () => {
     if (appState === AppState.IDLE) {
       setTranscription("");
@@ -23,23 +22,19 @@ const App: React.FC = () => {
     } else if (appState === AppState.RECORDING) {
       setAppState(AppState.TRANSCRIBING);
       const blob = await stopRecording();
-      
       if (blob) {
         await processAudio(blob);
       } else {
-        // Fallback if recording failed to produce blob
         setAppState(AppState.IDLE);
         alert("Recording failed. Please try again.");
       }
     }
   };
 
-  // Process Audio with Gemini
   const processAudio = async (blob: Blob) => {
     try {
       const base64Audio = await blobToBase64(blob);
       const result = await geminiService.transcribeAudio(base64Audio, blob.type);
-      
       setTranscription(result.text);
       setAppState(AppState.REVIEW);
     } catch (error) {
@@ -49,41 +44,33 @@ const App: React.FC = () => {
     }
   };
 
-  // Handle TTS Playback (Updated for Browser Native)
-  const handlePlay = () => {
+  // Play high-quality MP3 from server
+  const handlePlay = async () => {
     if (!transcription) return;
     
-    // Web Speech API is synchronous regarding the call, but asynchronous regarding the speech.
-    // We toggle state briefly to show feedback.
-    setIsPlaying(true);
-    
-    speakText(transcription);
-
-    // Reset button state after a short delay so user can press again if needed
-    // (Actual speech duration is hard to track perfectly across all browsers without complex listeners)
-    setTimeout(() => {
+    try {
+      setIsPlaying(true);
+      // Fetch MP3 from OpenAI via our server
+      const audioData = await geminiService.generateSpeech(transcription);
+      // Play it
+      await playAudioFromBase64(audioData);
+    } catch (error) {
+      console.error("Playback error", error);
+      alert("Could not play audio. Check API Key or Connection.");
+    } finally {
       setIsPlaying(false);
-    }, 1000);
+    }
   };
 
-  // Reset to Start
   const handleReset = () => {
     setTranscription("");
     setAppState(AppState.IDLE);
     setIsPlaying(false);
-    // Also cancel any ongoing speech
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
   };
 
   return (
-    // Changed min-h-screen to h-[100dvh] to strictly fit mobile viewports without address bar overlap issues
-    // Added overflow-hidden to prevent body scrolling; scrolling happens inside components
     <div className="flex flex-col h-[100dvh] bg-slate-50 p-2 sm:p-6 md:p-8 max-w-4xl mx-auto overflow-hidden">
       
-      {/* Header */}
-      {/* shrink-0 prevents the header from collapsing when space is tight */}
       <header className="shrink-0 mb-2 sm:mb-6 flex justify-between items-center">
         <h1 className="text-xl sm:text-3xl font-bold text-slate-800">Voice Helper</h1>
         {appState !== AppState.IDLE && (
@@ -97,11 +84,7 @@ const App: React.FC = () => {
         )}
       </header>
 
-      {/* Main Content Area */}
-      {/* flex-1 allows this area to grow/shrink. min-h-0 allows flex children to scroll. */}
       <main className="flex-1 flex flex-col items-center justify-center gap-4 sm:gap-8 min-h-0 w-full">
-        
-        {/* State: Permission Error */}
         {permissionError && (
           <div className="p-4 sm:p-6 bg-red-100 border-l-4 border-red-500 text-red-700 text-lg sm:text-xl rounded shadow-md mx-4">
             <p className="font-bold">Microphone Error</p>
@@ -109,7 +92,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* State: IDLE or RECORDING */}
         {(appState === AppState.IDLE || appState === AppState.RECORDING) && (
           <div className="flex flex-col items-center gap-6 sm:gap-8 animate-in fade-in duration-500">
              <div className="text-xl sm:text-3xl text-center font-medium text-slate-600 max-w-lg leading-relaxed px-2">
@@ -125,7 +107,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* State: TRANSCRIBING */}
         {appState === AppState.TRANSCRIBING && (
           <div className="flex flex-col items-center gap-6 animate-in fade-in zoom-in duration-300">
             <div className="w-20 h-20 sm:w-24 sm:h-24 border-8 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
@@ -133,33 +114,26 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* State: REVIEW or PLAYING */}
         {(appState === AppState.REVIEW || appState === AppState.PLAYING) && (
-          // flex-1 ensures this container takes ALL remaining vertical space
-          // min-h-0 ensures it can shrink if the Play button gets too big, forcing scroll in TranscriptionDisplay
           <div className="w-full flex-1 flex flex-col gap-3 sm:gap-6 min-h-0 animate-in slide-in-from-bottom-10 duration-500">
-            
             <TranscriptionDisplay 
               text={transcription} 
               onChange={setTranscription} 
             />
-
             <button
               onClick={handlePlay}
               disabled={isPlaying || !transcription}
-              // shrink-0 prevents the button from being squashed.
-              // Adjusted padding (py-3 sm:py-8) to save space on mobile
               className={`
                 shrink-0 w-full py-3 sm:py-8 rounded-3xl shadow-xl flex items-center justify-center gap-3 sm:gap-4 transition-all transform active:scale-[0.98]
                 ${isPlaying 
-                  ? 'bg-green-600' 
+                  ? 'bg-green-600 cursor-wait' 
                   : 'bg-green-500 hover:bg-green-600'}
                 disabled:opacity-50 disabled:cursor-not-allowed
               `}
             >
               {isPlaying ? (
                 <>
-                  <Volume2 className="w-8 h-8 sm:w-12 sm:h-12 text-white fill-current animate-pulse" />
+                  <Loader2 className="w-8 h-8 sm:w-12 sm:h-12 animate-spin text-white" />
                   <span className="text-xl sm:text-4xl font-bold text-white tracking-wide">Speaking...</span>
                 </>
               ) : (
@@ -171,11 +145,8 @@ const App: React.FC = () => {
             </button>
           </div>
         )}
-
       </main>
       
-      {/* Footer / Status Bar */}
-      {/* shrink-0 ensures footer is never cut off */}
       <footer className="shrink-0 mt-2 sm:mt-6 text-center text-slate-400 text-xs sm:text-2xl font-medium uppercase tracking-widest pb-safe">
         {appState === AppState.IDLE && "Ready"}
         {appState === AppState.RECORDING && <span className="text-red-500">Recording in progress</span>}

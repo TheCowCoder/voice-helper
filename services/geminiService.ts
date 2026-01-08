@@ -9,23 +9,13 @@ export class GeminiService {
     try {
       const response = await fetch('/api/transcribe', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base64Audio, mimeType }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.statusText}`);
-      }
-
+      if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
       const data = await response.json();
-      
-      if (!data.text) {
-        throw new Error("No transcription received from server.");
-      }
-
-      return { text: data.text, isError: false };
+      return { text: data.text || "", isError: false };
     } catch (error) {
       console.error("Transcription error:", error);
       return {
@@ -35,7 +25,26 @@ export class GeminiService {
     }
   }
 
-  // TTS method removed - we now use browser native speech
+  // Calls our new OpenAI endpoint
+  async generateSpeech(text: string): Promise<string> {
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
+
+      const data = await response.json();
+      if (!data.audioData) throw new Error("No audio received");
+      
+      return data.audioData;
+    } catch (error) {
+      console.error("TTS error:", error);
+      throw error;
+    }
+  }
 }
 
 export const geminiService = new GeminiService();

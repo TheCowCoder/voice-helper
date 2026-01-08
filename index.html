@@ -1,21 +1,24 @@
+ 
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- viewport-fit=cover ensures we use the full screen area on iPhone (including notch) -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     
-    <!-- iOS PWA tags: These make the app behave like a native app if added to Home Screen -->
-    <!-- This significantly helps with persisting permissions across sessions -->
+    <!-- PWA Settings -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Voice Helper" />
     <meta name="theme-color" content="#f8fafc" />
+
+    <!-- Link the Manifest -->
+    <link rel="manifest" href="/manifest.json" />
 
     <title>Voice Helper</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       body {
-        /* Prevents pull-to-refresh on mobile which causes accidental page reloads */
         overscroll-behavior-y: none;
         -webkit-user-select: none;
         user-select: none;
@@ -25,7 +28,6 @@
         -webkit-user-select: text;
         user-select: text;
       }
-      /* Helper to respect iPhone Home Indicator area */
       .pb-safe {
         padding-bottom: env(safe-area-inset-bottom, 20px);
       }
@@ -51,7 +53,6 @@
 </head>
   <body class="bg-slate-50 text-slate-900 h-[100dvh] w-screen overflow-hidden">
     <div id="root" class="h-full w-full"></div>
-    <!-- Vite Entry Point -->
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>

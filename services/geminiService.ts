@@ -1,4 +1,5 @@
 
+
 import { TranscriptionResult } from "../types";
 
 export class GeminiService {
@@ -15,6 +16,7 @@ export class GeminiService {
 
       if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
       const data = await response.json();
+      
       return { text: data.text || "", isError: false };
     } catch (error) {
       console.error("Transcription error:", error);
@@ -25,7 +27,6 @@ export class GeminiService {
     }
   }
 
-  // Calls our new OpenAI endpoint
   async generateSpeech(text: string): Promise<string> {
     try {
       const response = await fetch('/api/tts', {
@@ -37,9 +38,12 @@ export class GeminiService {
       if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
 
       const data = await response.json();
-      if (!data.audioData) throw new Error("No audio received");
       
+      if (!data.audioData) {
+        throw new Error("No audio data received from server.");
+      }
       return data.audioData;
+
     } catch (error) {
       console.error("TTS error:", error);
       throw error;

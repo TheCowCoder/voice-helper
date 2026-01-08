@@ -1,10 +1,9 @@
 
-
 import React, { useState } from 'react';
 import { RotateCcw, Loader2, Volume2 } from 'lucide-react';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { geminiService } from './services/geminiService';
-import { playAudioFromBase64, blobToBase64 } from './utils/audioUtils';
+import { speakText, blobToBase64 } from './utils/audioUtils';
 import { RecordButton } from './components/RecordButton';
 import { TranscriptionDisplay } from './components/TranscriptionDisplay';
 import { AppState } from './types';
@@ -50,22 +49,21 @@ const App: React.FC = () => {
     }
   };
 
-  // Handle TTS Playback
-  const handlePlay = async () => {
+  // Handle TTS Playback (Updated for Browser Native)
+  const handlePlay = () => {
     if (!transcription) return;
     
-    try {
-      setIsPlaying(true);
-      // Generate speech using Gemini TTS
-      const audioData = await geminiService.generateSpeech(transcription);
-      // Play the audio
-      await playAudioFromBase64(audioData);
-    } catch (error) {
-      console.error("Playback error", error);
-      alert("Could not play audio. Please try again.");
-    } finally {
+    // Web Speech API is synchronous regarding the call, but asynchronous regarding the speech.
+    // We toggle state briefly to show feedback.
+    setIsPlaying(true);
+    
+    speakText(transcription);
+
+    // Reset button state after a short delay so user can press again if needed
+    // (Actual speech duration is hard to track perfectly across all browsers without complex listeners)
+    setTimeout(() => {
       setIsPlaying(false);
-    }
+    }, 1000);
   };
 
   // Reset to Start
@@ -73,6 +71,10 @@ const App: React.FC = () => {
     setTranscription("");
     setAppState(AppState.IDLE);
     setIsPlaying(false);
+    // Also cancel any ongoing speech
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
   };
 
   return (
@@ -150,14 +152,14 @@ const App: React.FC = () => {
               className={`
                 shrink-0 w-full py-3 sm:py-8 rounded-3xl shadow-xl flex items-center justify-center gap-3 sm:gap-4 transition-all transform active:scale-[0.98]
                 ${isPlaying 
-                  ? 'bg-green-600 cursor-wait' 
+                  ? 'bg-green-600' 
                   : 'bg-green-500 hover:bg-green-600'}
                 disabled:opacity-50 disabled:cursor-not-allowed
               `}
             >
               {isPlaying ? (
                 <>
-                  <Loader2 className="w-8 h-8 sm:w-12 sm:h-12 animate-spin text-white" />
+                  <Volume2 className="w-8 h-8 sm:w-12 sm:h-12 text-white fill-current animate-pulse" />
                   <span className="text-xl sm:text-4xl font-bold text-white tracking-wide">Speaking...</span>
                 </>
               ) : (

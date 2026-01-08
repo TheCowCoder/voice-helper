@@ -1,4 +1,4 @@
- 
+--- START OF FILE index.html ---
 
 <!DOCTYPE html>
 <html lang="en">
@@ -11,6 +11,13 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Voice Helper" />
     <meta name="theme-color" content="#f8fafc" />
+
+    <!-- iOS Home Screen Icon (The Magic Tag) -->
+    <!-- iOS ignores the manifest icons and looks specifically for this tag. Apple automatically adds the rounded corners. -->
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3209/3209265.png" />
+
+    <!-- Standard Favicon for Browser Tabs -->
+    <link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/3209/3209265.png" />
 
     <!-- Link the Manifest -->
     <link rel="manifest" href="/manifest.json" />

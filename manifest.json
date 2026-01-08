@@ -1,12 +1,12 @@
---- START OF FILE manifest.json ---
-
 {
   "name": "Grandpa's Voice Helper",
   "short_name": "Voice Helper",
   "start_url": "/",
+  "scope": "/", 
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#f8fafc",
+  "orientation": "portrait",
   "icons": [
     {
       "src": "https://cdn-icons-png.flaticon.com/512/3209/3209265.png",
@@ -18,10 +18,5 @@
       "sizes": "512x512",
       "type": "image/png"
     }
-  ],
-  "permissions": {
-    "audio-capture": {
-      "description": "Required to listen to speech for transcription."
-    }
-  }
+  ]
 }

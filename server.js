@@ -71,8 +71,23 @@ or mix both languages in a single utterance (code-switching).
 Family: Satish Bhatt (self), Rupal Bhatt (daughter), Sonal Bhatt (daughter),
 Ian Bhatt (grandson), Ellora Bhatt (granddaughter), Dan Tamasauskas (stepson),
 David Dana (stepson), Forest Dana (grandson), Leela Dana (granddaughter)
-Common topics: healthcare, medications, doctor appointments, finances, tennis
+Common topics: healthcare, medications, doctor appointments, finances, tennis,
+speech therapy, physical therapy, exercises, daily routines
 </vocabulary>
+
+<confidence_calibration>
+CRITICAL: You MUST calibrate confidence honestly for dysarthric speech.
+- Dysarthric speakers often produce sounds that seem clear but are actually
+  distorted versions of completely different words.
+- A word that "sounds like" something in the audio may NOT be what was intended.
+- If ANY word in your transcription feels like it could be a different word,
+  your confidence should be BELOW 0.6.
+- Only report confidence above 0.7 if you are CERTAIN of every single word AND
+  the phrase makes perfect semantic sense in context.
+- For short utterances (< 5 words), be extra cautious — confidence should rarely exceed 0.7.
+- If a word you transcribed is not a real common English/Gujarati word (e.g. nonsense
+  syllables like "gtape", "foost", "breen"), your confidence MUST be below 0.4.
+</confidence_calibration>
 
 <instructions>
 1. Listen to the audio and determine the intended meaning, NOT a verbatim transcript.
@@ -80,6 +95,8 @@ Common topics: healthcare, medications, doctor appointments, finances, tennis
 3. The speaker has dysarthria — slurred sounds are normal, not errors in hearing.
 4. Use conversation context and vocabulary hints to resolve ambiguity.
 5. For short phrases (2-5 words), rely heavily on context and common phrases.
+6. ALWAYS generate at least 3 alternative interpretations, even if you feel confident.
+7. Think about what REAL phrase the speaker likely intended, not just what the audio sounds like.
 </instructions>`;
 
 const TRANSCRIPTION_SCHEMA = {
@@ -308,21 +325,28 @@ Output structured JSON following the schema exactly.
     : stage1Response.text;
   const stage1 = JSON.parse(stage1Text);
 
-  // Stage 2: Conditional refinement if low confidence
-  if (stage1.confidence < 0.7) {
-    console.log(`Stage 2 triggered — confidence=${stage1.confidence}`);
+  // Stage 2: Always run refinement for dysarthric speech
+  console.log(`Stage 2 running — Stage 1 confidence=${stage1.confidence}`);
 
     const stage2Prompt = `<stage2_refinement>
-The initial transcription had low confidence (${stage1.confidence}).
+The initial transcription had confidence=${stage1.confidence}.
 Phonetic: "${stage1.phonetic_transcription}"
 Initial interpretation: "${stage1.primary_transcription}"
 Alternatives considered: ${JSON.stringify(stage1.alternative_interpretations)}
 
+IMPORTANT: The initial transcription may contain NONSENSE words that are actually
+dysarthric pronunciations of real words. For example:
+- "GTAPE" might be "speech" or "tape" or "grape"
+- "foost" might be "first" or "food"
+- Any word that is not a common English/Gujarati word should be reconsidered.
+
 Please re-analyze with deeper reasoning. Consider:
-1. Common phrases in daily life for a post-stroke patient
-2. Gujarati words that might sound similar
-3. The conversation context provided
-4. Known correction patterns from this speaker
+1. What REAL words could the phonetic sounds map to?
+2. Common phrases in daily life for a post-stroke patient
+3. Gujarati words that might sound similar
+4. The conversation context provided
+5. Known correction patterns from this speaker
+6. What would make semantic sense as a complete thought?
 
 Produce an improved structured JSON interpretation.
 </stage2_refinement>${correctionExamples}${rollingContext}`;
@@ -351,9 +375,6 @@ Produce an improved structured JSON interpretation.
     const stage2 = JSON.parse(stage2Text);
 
     return { ...stage2, stage2Used: true };
-  }
-
-  return { ...stage1, stage2Used: false };
 }
 
 // ── API: Transcribe Audio (Two-Stage Pipeline) ──

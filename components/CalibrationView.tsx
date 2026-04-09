@@ -57,7 +57,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       { id: 'capture', label: 'Audio Capture', status: 'pending', detail: 'Recording from microphone' },
       { id: 'preprocess', label: 'Audio Preprocessing', status: 'pending', detail: 'Gain boost + dynamic compression via Web Audio' },
       { id: 'stage1', label: 'Stage 1: Acoustic Transcription', status: 'pending', detail: 'Gemini 3 Flash — structured JSON, thinkingLevel: low' },
-      { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Chain-of-thought correction if confidence < 70%' },
+      { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' },
     ]);
   }, []);
 
@@ -92,7 +92,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
           if (result.stage2Used) {
             updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via chain-of-thought`);
           } else {
-            updateStep('refine', 'done', 'Skipped — high confidence (≥70%), no refinement needed');
+            updateStep('refine', 'done', `Completed — ${Math.round(result.structured.confidence * 100)}% confidence`);
           }
         } else {
           updateStep('stage1', 'done');

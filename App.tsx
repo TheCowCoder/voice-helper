@@ -41,7 +41,7 @@ const App: React.FC = () => {
       { id: 'capture', label: 'Audio Capture', status: 'pending', detail: 'Recording from microphone' },
       { id: 'preprocess', label: 'Audio Preprocessing', status: 'pending', detail: 'Gain boost + dynamic compression via Web Audio' },
       { id: 'stage1', label: 'Stage 1: Acoustic Transcription', status: 'pending', detail: 'Gemini 3 Flash — structured JSON, thinkingLevel: low' },
-      { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Chain-of-thought correction if confidence < 70%' },
+      { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' },
     ]);
   }, []);
 
@@ -95,7 +95,7 @@ const App: React.FC = () => {
         if (result.stage2Used) {
           updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via chain-of-thought`);
         } else {
-          updateStep('refine', 'done', 'Skipped — high confidence (≥70%), no refinement needed');
+          updateStep('refine', 'done', `Completed — ${Math.round(result.structured.confidence * 100)}% confidence`);
         }
       } else {
         updateStep('stage1', 'done');
@@ -286,7 +286,7 @@ const App: React.FC = () => {
                 onClick={handlePlay}
                 disabled={isPlaying || !transcription}
                 className={`
-                  shrink-0 w-full py-5 sm:py-10 rounded-3xl shadow-xl flex items-center justify-center gap-4 sm:gap-5 transition-all transform active:scale-[0.98]
+                  shrink-0 w-full py-3 sm:py-5 rounded-2xl shadow-lg flex items-center justify-center gap-3 sm:gap-4 transition-all transform active:scale-[0.98]
                   ${isPlaying 
                     ? 'bg-green-600 cursor-wait' 
                     : 'bg-green-500 hover:bg-green-600'}
@@ -295,13 +295,13 @@ const App: React.FC = () => {
               >
                 {isPlaying ? (
                   <>
-                    <Loader2 className="w-10 h-10 sm:w-14 sm:h-14 animate-spin text-white" />
-                    <span className="text-3xl sm:text-4xl font-bold text-white tracking-wide">Speaking...</span>
+                    <Loader2 className="w-7 h-7 sm:w-9 sm:h-9 animate-spin text-white" />
+                    <span className="text-2xl sm:text-3xl font-bold text-white tracking-wide">Speaking...</span>
                   </>
                 ) : (
                   <>
-                    <Volume2 className="w-10 h-10 sm:w-14 sm:h-14 text-white fill-current" />
-                    <span className="text-3xl sm:text-4xl font-bold text-white tracking-wide">Play Voice</span>
+                    <Volume2 className="w-7 h-7 sm:w-9 sm:h-9 text-white fill-current" />
+                    <span className="text-2xl sm:text-3xl font-bold text-white tracking-wide">Play Voice</span>
                   </>
                 )}
               </button>
@@ -313,7 +313,7 @@ const App: React.FC = () => {
           {appState === AppState.IDLE && "Ready"}
           {appState === AppState.RECORDING && <span className="text-red-500">Recording in progress</span>}
           {appState === AppState.TRANSCRIBING && "Processing with Gemini..."}
-          {appState === AppState.REVIEW && "Review & Play"}
+          {appState === AppState.REVIEW && ""}
         </footer>
       </div>
     </div>

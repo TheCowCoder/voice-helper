@@ -3,8 +3,7 @@ import { Mic, Square, Check, RotateCcw, SkipForward } from 'lucide-react';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { geminiService } from '../services/geminiService';
 import { blobToBase64 } from '../utils/audioUtils';
-import { CalibrationPhrase, StructuredTranscription, TranscriptionStep } from '../types';
-import { WordPills } from './WordPills';
+import { CalibrationPhrase, TranscriptionStep } from '../types';
 import { StepBubbles } from './StepBubbles';
 
 const PHRASES: CalibrationPhrase[] = [
@@ -38,8 +37,6 @@ interface CalibrationViewProps {
 export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClose }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [heard, setHeard] = useState('');
-  const [corrected, setCorrected] = useState('');
-  const [structured, setStructured] = useState<StructuredTranscription | undefined>();
   const [steps, setSteps] = useState<TranscriptionStep[]>([]);
   const [lastAudioBase64, setLastAudioBase64] = useState('');
   const [lastMimeType, setLastMimeType] = useState('');
@@ -91,26 +88,19 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         // Stage 2: Semantic refinement
         const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId);
 
-        if (result.structured) {
-          setStructured(result.structured);
-          updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`);
-        } else {
-          updateStep('refine', 'done');
-        }
+        updateStep('refine', 'done', result.structured
+          ? `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`
+          : undefined);
 
         setHeard(result.text);
-        setCorrected(result.text);
       } catch (err) {
         console.error("Calibration transcription error:", err);
         updateStep('stage1', 'error', 'Failed');
         setHeard('(could not transcribe)');
-        setCorrected('');
       }
       setIsProcessing(false);
     } else {
       setHeard('');
-      setCorrected('');
-      setStructured(undefined);
       setSteps([]);
       setLastAudioBase64('');
       await startRecording();
@@ -118,23 +108,14 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
     }
   };
 
-  const handleWordCorrection = (original: string, replacement: string) => {
-    setCorrected(prev => {
-      const words = prev.split(/(\s+)/);
-      const idx = words.findIndex(w => w === original);
-      if (idx !== -1) words[idx] = replacement;
-      return words.join('');
-    });
-  };
-
   const handleConfirm = async () => {
-    if (!heard || !corrected.trim()) return;
+    if (!heard) return;
 
     try {
       await geminiService.calibrate({
         userId,
         heard,
-        correct: corrected.trim(),
+        correct: phrase.text,
         phraseId: phrase.id,
         audioBase64: lastAudioBase64,
         mimeType: lastMimeType,
@@ -143,8 +124,6 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       setSaved(prev => new Set(prev).add(phrase.id));
       setCurrentIndex(i => i + 1);
       setHeard('');
-      setCorrected('');
-      setStructured(undefined);
       setSteps([]);
       setLastAudioBase64('');
     } catch (err) {
@@ -155,16 +134,12 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   const handleSkip = () => {
     setCurrentIndex(i => i + 1);
     setHeard('');
-    setCorrected('');
-    setStructured(undefined);
     setSteps([]);
     setLastAudioBase64('');
   };
 
   const handleRedo = () => {
     setHeard('');
-    setCorrected('');
-    setStructured(undefined);
     setSteps([]);
     setLastAudioBase64('');
   };
@@ -229,7 +204,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
           </div>
         )}
 
-        {/* Transcription result with WordPills */}
+        {/* Transcription result — simplified since target is known */}
         {heard && !isProcessing && (
           <div className="w-full bg-slate-50 rounded-3xl p-6 sm:p-8 space-y-5 shrink-0">
             {steps.length > 0 && (
@@ -247,15 +222,8 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
               <p className="text-2xl sm:text-3xl text-slate-600 font-medium mt-2">{heard}</p>
             </div>
             <div>
-              <label className="text-lg sm:text-xl font-bold text-slate-400 uppercase tracking-wider">Correct to:</label>
-              <div className="mt-2 bg-white rounded-2xl border-2 border-slate-200">
-                <WordPills
-                  text={corrected}
-                  alternatives={structured?.alternative_interpretations}
-                  onCorrection={handleWordCorrection}
-                />
-                <p className="text-lg sm:text-xl text-slate-400 px-5 pb-3 font-medium">Tap a word to highlight it — then pick a suggestion or type your own</p>
-              </div>
+              <label className="text-lg sm:text-xl font-bold text-slate-400 uppercase tracking-wider">Target:</label>
+              <p className="text-2xl sm:text-3xl text-green-600 font-bold mt-2">&ldquo;{phrase.text}&rdquo;</p>
             </div>
           </div>
         )}

@@ -262,6 +262,18 @@ async function getCorrectionExamples(userId, limit = 10) {
   return `\n<few_shot_corrections>\nThese are known corrections for this speaker. Use them to improve interpretation.\n${examples}\n</few_shot_corrections>`;
 }
 
+// ── Helper: fetch audio samples for few-shot ──
+
+async function getAudioSamples(userId, limit = 3) {
+  if (!db) return [];
+  const samples = await db.collection('audioSamples')
+    .find({ userId: new ObjectId(userId) })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .toArray();
+  return samples;
+}
+
 // ── Helper: build rolling context from recent transcriptions ──
 
 function buildRollingContext(recentTranscriptions) {
@@ -292,9 +304,23 @@ async function withRetry(fn, { maxRetries = Infinity, baseDelay = 1000, maxDelay
 
 async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions) {
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
+  const audioSamples = userId ? await getAudioSamples(userId, 3) : [];
   const rollingContext = buildRollingContext(recentTranscriptions);
 
-  const dynamicPrompt = `${correctionExamples}${rollingContext}
+  // Build few-shot audio reference parts
+  const fewShotParts = [];
+  for (const sample of audioSamples) {
+    fewShotParts.push(
+      { text: `<reference_audio transcript="${sample.transcript}">` },
+      { inlineData: { mimeType: sample.mimeType || 'audio/webm', data: sample.base64Audio } },
+      { text: `</reference_audio>` }
+    );
+  }
+  const fewShotIntro = audioSamples.length > 0
+    ? `\n<audio_references>\nThe following are reference audio samples from this speaker with their verified transcripts. Use these to learn the speaker's voice patterns and pronunciation.\n</audio_references>\n`
+    : '';
+
+  const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}
 
 <task>
 Analyze the audio recording and produce your best interpretation of the speaker's intended meaning.
@@ -306,6 +332,7 @@ Output structured JSON following the schema exactly.
     systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
     contents: {
       parts: [
+        ...fewShotParts,
         { inlineData: { mimeType: mimeType || 'audio/webm', data: base64Audio } },
         { text: dynamicPrompt },
       ],
@@ -327,9 +354,20 @@ Output structured JSON following the schema exactly.
 
 async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions) {
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
+  const audioSamples = userId ? await getAudioSamples(userId, 3) : [];
   const rollingContext = buildRollingContext(recentTranscriptions);
 
-  console.log(`Stage 2 running — Stage 1 confidence=${stage1.confidence}`);
+  console.log(`Stage 2 running — Stage 1 confidence=${stage1.confidence}, ${audioSamples.length} audio refs`);
+
+  // Build few-shot audio reference parts
+  const fewShotParts = [];
+  for (const sample of audioSamples) {
+    fewShotParts.push(
+      { text: `<reference_audio transcript="${sample.transcript}">` },
+      { inlineData: { mimeType: sample.mimeType || 'audio/webm', data: sample.base64Audio } },
+      { text: `</reference_audio>` }
+    );
+  }
 
   const stage2Prompt = `<stage2_refinement>
 The initial transcription had confidence=${stage1.confidence}.
@@ -359,6 +397,7 @@ Produce an improved structured JSON interpretation.
     systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
     contents: {
       parts: [
+        ...fewShotParts,
         { inlineData: { mimeType: mimeType || 'audio/webm', data: base64Audio } },
         { text: stage2Prompt },
       ],

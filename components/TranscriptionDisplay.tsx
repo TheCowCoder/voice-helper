@@ -25,8 +25,8 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
   }, []);
 
   return (
-    <div className="w-full flex-1 flex flex-col bg-white rounded-3xl shadow-lg border-4 border-slate-200 overflow-hidden min-h-0">
-      <div className="bg-slate-100 px-5 py-4 sm:px-6 sm:py-5 border-b-2 border-slate-200 shrink-0 flex items-center justify-between">
+    <div className="w-full flex-1 flex flex-col bg-white rounded-3xl shadow-lg border-4 border-slate-200 min-h-0 overflow-y-auto">
+      <div className="bg-slate-100 px-5 py-4 sm:px-6 sm:py-5 border-b-2 border-slate-200 shrink-0 flex items-center justify-between flex-wrap gap-2">
         <label htmlFor="transcription" className="text-xl sm:text-2xl font-bold text-slate-500 uppercase tracking-wider">
           Message to Speak:
         </label>

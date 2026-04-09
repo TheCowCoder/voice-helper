@@ -290,7 +290,7 @@ async function withRetry(fn, { maxRetries = Infinity, baseDelay = 1000, maxDelay
 
 // ── Helper: Two-Stage Transcription Pipeline ──
 
-async function runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions) {
+async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions) {
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
   const rollingContext = buildRollingContext(recentTranscriptions);
 
@@ -301,7 +301,6 @@ Analyze the audio recording and produce your best interpretation of the speaker'
 Output structured JSON following the schema exactly.
 </task>`;
 
-  // Stage 1: Low-thinking structured transcription
   const stage1Response = await withRetry(() => ai.models.generateContent({
     model: 'gemini-3-flash-preview',
     systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
@@ -323,12 +322,16 @@ Output structured JSON following the schema exactly.
   const stage1Text = typeof stage1Response.text === 'function'
     ? await stage1Response.text()
     : stage1Response.text;
-  const stage1 = JSON.parse(stage1Text);
+  return JSON.parse(stage1Text);
+}
 
-  // Stage 2: Always run refinement for dysarthric speech
+async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions) {
+  const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
+  const rollingContext = buildRollingContext(recentTranscriptions);
+
   console.log(`Stage 2 running — Stage 1 confidence=${stage1.confidence}`);
 
-    const stage2Prompt = `<stage2_refinement>
+  const stage2Prompt = `<stage2_refinement>
 The initial transcription had confidence=${stage1.confidence}.
 Phonetic: "${stage1.phonetic_transcription}"
 Initial interpretation: "${stage1.primary_transcription}"
@@ -351,33 +354,81 @@ Please re-analyze with deeper reasoning. Consider:
 Produce an improved structured JSON interpretation.
 </stage2_refinement>${correctionExamples}${rollingContext}`;
 
-    const stage2Response = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
-      contents: {
-        parts: [
-          { inlineData: { mimeType: mimeType || 'audio/webm', data: base64Audio } },
-          { text: stage2Prompt },
-        ],
-      },
-      config: {
-        temperature: 1,
-        thinkingConfig: { thinkingLevel: 'medium' },
-        responseMimeType: 'application/json',
-        responseSchema: TRANSCRIPTION_SCHEMA,
-        tools: [],
-      },
-    }));
+  const stage2Response = await withRetry(() => ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
+    contents: {
+      parts: [
+        { inlineData: { mimeType: mimeType || 'audio/webm', data: base64Audio } },
+        { text: stage2Prompt },
+      ],
+    },
+    config: {
+      temperature: 1,
+      thinkingConfig: { thinkingLevel: 'medium' },
+      responseMimeType: 'application/json',
+      responseSchema: TRANSCRIPTION_SCHEMA,
+      tools: [],
+    },
+  }));
 
-    const stage2Text = typeof stage2Response.text === 'function'
-      ? await stage2Response.text()
-      : stage2Response.text;
-    const stage2 = JSON.parse(stage2Text);
-
-    return { ...stage2, stage2Used: true };
+  const stage2Text = typeof stage2Response.text === 'function'
+    ? await stage2Response.text()
+    : stage2Response.text;
+  return JSON.parse(stage2Text);
 }
 
-// ── API: Transcribe Audio (Two-Stage Pipeline) ──
+// Combined pipeline (used by chat endpoint)
+async function runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions) {
+  const stage1 = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
+  const stage2 = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions);
+  return { ...stage2, stage2Used: true };
+}
+
+// ── API: Transcribe Audio — Stage 1 ──
+
+app.post('/api/transcribe/stage1', async (req, res) => {
+  try {
+    if (!API_KEY) return res.status(500).json({ error: "API_KEY not configured" });
+
+    const ai = getAiClient();
+    let { base64Audio, mimeType, userId, recentTranscriptions } = req.body || {};
+
+    if (!base64Audio) return res.status(400).json({ error: "base64Audio is required" });
+    if (mimeType && mimeType.includes(';')) mimeType = mimeType.split(';')[0];
+
+    console.log(`/api/transcribe/stage1 — mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
+    const result = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
+    res.json(result);
+  } catch (error) {
+    console.error("Stage 1 API Error:", error?.message || error);
+    res.status(500).json({ error: error?.message || "Stage 1 failed" });
+  }
+});
+
+// ── API: Transcribe Audio — Stage 2 ──
+
+app.post('/api/transcribe/stage2', async (req, res) => {
+  try {
+    if (!API_KEY) return res.status(500).json({ error: "API_KEY not configured" });
+
+    const ai = getAiClient();
+    let { base64Audio, mimeType, userId, recentTranscriptions, stage1Result } = req.body || {};
+
+    if (!base64Audio) return res.status(400).json({ error: "base64Audio is required" });
+    if (!stage1Result) return res.status(400).json({ error: "stage1Result is required" });
+    if (mimeType && mimeType.includes(';')) mimeType = mimeType.split(';')[0];
+
+    console.log(`/api/transcribe/stage2 — refining "${stage1Result.primary_transcription}"`);
+    const result = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1Result, userId, recentTranscriptions);
+    res.json({ ...result, stage2Used: true });
+  } catch (error) {
+    console.error("Stage 2 API Error:", error?.message || error);
+    res.status(500).json({ error: error?.message || "Stage 2 failed" });
+  }
+});
+
+// ── API: Transcribe Audio (Combined — legacy) ──
 
 app.post('/api/transcribe', async (req, res) => {
   try {

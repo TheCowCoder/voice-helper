@@ -54,7 +54,6 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
 
   const initSteps = useCallback(() => {
     setSteps([
-      { id: 'capture', label: 'Audio Capture', status: 'pending', detail: 'Recording from microphone' },
       { id: 'preprocess', label: 'Audio Preprocessing', status: 'pending', detail: 'Gain boost + dynamic compression via Web Audio' },
       { id: 'stage1', label: 'Stage 1: Acoustic Transcription', status: 'pending', detail: 'Gemini 3 Flash — structured JSON, thinkingLevel: low' },
       { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' },
@@ -69,7 +68,6 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
     if (isRecording) {
       // Stop recording — start pipeline
       initSteps();
-      updateStep('capture', 'done', 'Audio captured');
       updateStep('preprocess', 'active');
       setIsProcessing(true);
 
@@ -84,18 +82,19 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         setLastAudioBase64(base64Audio);
         setLastMimeType(blob.type);
 
-        const result = await geminiService.transcribeAudio(base64Audio, blob.type, userId);
+        // Stage 1: Acoustic transcription
+        const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId);
+
+        updateStep('stage1', 'done', `Phonetic: "${stage1.phonetic_transcription}" — ${Math.round(stage1.confidence * 100)}% confidence`);
+        updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
+
+        // Stage 2: Semantic refinement
+        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId);
 
         if (result.structured) {
           setStructured(result.structured);
-          updateStep('stage1', 'done', `Phonetic: "${result.structured.phonetic_transcription}" — ${Math.round(result.structured.confidence * 100)}% confidence`);
-          if (result.stage2Used) {
-            updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via chain-of-thought`);
-          } else {
-            updateStep('refine', 'done', `Completed — ${Math.round(result.structured.confidence * 100)}% confidence`);
-          }
+          updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`);
         } else {
-          updateStep('stage1', 'done');
           updateStep('refine', 'done');
         }
 
@@ -116,7 +115,6 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       setLastAudioBase64('');
       await startRecording();
       initSteps();
-      updateStep('capture', 'active');
     }
   };
 

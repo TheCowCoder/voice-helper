@@ -60,9 +60,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
   const handleRecordToggle = async () => {
     if (isRecording) {
       setSteps([
-        { id: 'capture', label: 'Audio Capture', status: 'done', detail: 'Audio captured' },
         { id: 'preprocess', label: 'Audio Preprocessing', status: 'active', detail: 'Gain boost + dynamic compression' },
-        { id: 'transcribe', label: 'Transcription', status: 'pending', detail: 'Gemini 3 Flash two-stage pipeline' },
+        { id: 'stage1', label: 'Stage 1: Transcription', status: 'pending', detail: 'Gemini 3 Flash — acoustic analysis' },
+        { id: 'refine', label: 'Stage 2: Refinement', status: 'pending', detail: 'Deep reasoning pass' },
       ]);
       setIsProcessing(true);
 
@@ -70,14 +70,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
       if (!blob) { setIsProcessing(false); setSteps([]); return; }
 
       updateStep('preprocess', 'done', `Preprocessed ${(blob.size / 1024).toFixed(0)}KB ${blob.type}`);
-      updateStep('transcribe', 'active');
+      updateStep('stage1', 'active');
 
       try {
         const base64Audio = await blobToBase64(blob);
 
-        // Step 1: Transcribe audio
-        const transcriptionResult = await geminiService.transcribeAudio(base64Audio, blob.type, userId);
-        const userText = transcriptionResult.text || '[voice message]';
+        // Stage 1: Acoustic transcription
+        const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId);
+        updateStep('stage1', 'done', `"${stage1.primary_transcription}" — ${Math.round(stage1.confidence * 100)}%`);
+        updateStep('refine', 'active', 'Deep reasoning refinement...');
+
+        // Stage 2: Semantic refinement
+        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId);
+        const userText = result.text || '[voice message]';
+        updateStep('refine', 'done', `Refined: "${userText}"`);
 
         // Clear pipeline steps — transcription is done
         setSteps([]);

@@ -47,6 +47,53 @@ export class GeminiService {
     }
   }
 
+  async transcribeStage1(
+    base64Audio: string,
+    mimeType: string,
+    userId?: string,
+    recentTranscriptions?: string[]
+  ): Promise<StructuredTranscription> {
+    const response = await fetch('/api/transcribe/stage1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64Audio, mimeType, userId, recentTranscriptions }),
+    });
+    if (!response.ok) throw new Error(`Stage 1 error: ${response.statusText}`);
+    return response.json();
+  }
+
+  async transcribeStage2(
+    base64Audio: string,
+    mimeType: string,
+    stage1Result: StructuredTranscription,
+    userId?: string,
+    recentTranscriptions?: string[]
+  ): Promise<TranscriptionResult> {
+    const response = await fetch('/api/transcribe/stage2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64Audio, mimeType, stage1Result, userId, recentTranscriptions }),
+    });
+    if (!response.ok) throw new Error(`Stage 2 error: ${response.statusText}`);
+    const data = await response.json();
+
+    const structured: StructuredTranscription = {
+      phonetic_transcription: data.phonetic_transcription || '',
+      primary_transcription: data.primary_transcription || '',
+      confidence: data.confidence ?? 0,
+      language_detected: data.language_detected || 'english',
+      alternative_interpretations: data.alternative_interpretations || [],
+      detected_emotion: data.detected_emotion || 'neutral',
+    };
+
+    return {
+      text: structured.primary_transcription,
+      isError: false,
+      structured,
+      stage2Used: true,
+    };
+  }
+
   async chat(
     base64Audio: string,
     mimeType: string,

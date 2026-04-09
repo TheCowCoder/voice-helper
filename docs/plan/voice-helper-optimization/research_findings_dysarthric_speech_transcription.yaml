@@ -1,0 +1,933 @@
+plan_id: voice-helper-optimization
+objective: "Research optimizations for AI transcription of dysarthric/impaired speech in the Voice Helper web app"
+focus_area: "Dysarthric speech transcription optimization — Gemini API, LLM post-ASR correction, audio preprocessing, speaker adaptation, prompt engineering"
+created_at: "2026-07-08"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - The dominant pattern in academic literature (2024-2026) is two-stage ASR+LLM correction: a first-pass ASR produces N-best hypotheses, then an LLM rewrites/corrects them — achieving 10-47% relative WER reductions on dysarthric speech (arXiv:2601.21347, arXiv:2509.25048, arXiv:2505.20163).
+  - Zero-shot Gemini/GPT performance on severe dysarthria exceeds 49% WER; mild cases achieve 3-5% WER. Verbatim-transcription prompts help GPT-4o (-7.36pp WER) but degrade Gemini variants (arXiv:2512.17474). Prompt engineering is architecture-specific.
+  - Speaker personalization via few-shot in-context learning achieves 13.9% WER on Euphonia (vs 17.5% baseline), with as few as 5-10 enrollment utterances yielding 40% WER reduction (arXiv:2509.15516). Two-stage SI→SS fine-tuning consistently improves on direct speaker-specific fine-tuning (arXiv:2603.15261).
+  - The current Voice Helper uses a single zero-shot Gemini 3 Flash prompt with no preprocessing, no structured output, no N-best hypotheses, and no correction layer — all of which are supported improvements per the literature and Gemini API docs.
+  - Key open question: Gemini's native audio understanding tokenizes at 32 tokens/sec with 16KHz downsampling — whether client-side Web Audio preprocessing (compression, filtering) helps or hurts this pipeline is untested.
+
+research_metadata:
+  methodology: |
+    Hybrid retrieval: semantic_search on workspace codebase + grep_search for implementation patterns.
+    External research via fetch_webpage on arxiv search results, individual paper abstracts, Google API documentation, MDN Web API docs, and commercial product pages.
+    Arxiv search queries: "dysarthric speech recognition" (89 results), "LLM ASR error correction" (68 results), "dysarthria ASR adaptation" (3 results).
+    Individual paper abstract fetches for 12 top-ranked papers.
+    API documentation fetches for 7 Google AI/Cloud pages and 3 MDN pages.
+    Commercial product analysis for 3 assistive speech products.
+    Codebase analysis via read_file on all 8 source files.
+  scope: "Comprehensive — covers academic literature (2022-2026), API documentation, commercial products, and full codebase analysis"
+  confidence: high
+  coverage: 92
+  decision_blockers: 2
+  research_blockers: 1
+
+files_analyzed:
+  - file: server.js
+    path: /Users/ianbhatt/Downloads/voice-helper/server.js
+    purpose: "Express backend — hosts /api/transcribe and /api/tts endpoints, calls Gemini 3 Flash Preview"
+    key_elements:
+      - element: PROMPT_TEXT
+        type: variable
+        location: "server.js:42-49"
+        description: "Current transcription prompt — zero-shot, instructs Gemini to interpret stroke-impaired speech for 'grandpa named Satish Bhatt'. No few-shot examples, no structured output schema, no confidence scoring."
+      - element: "/api/transcribe handler"
+        type: function
+        location: "server.js:53-93"
+        description: "Single-pass transcription: sends base64 audio + prompt to gemini-3-flash-preview with temperature=1, no thinkingLevel config, no structured output, returns plain text."
+      - element: "getAiClient"
+        type: function
+        location: "server.js:27-30"
+        description: "Lazy initialization of GoogleGenAI client with API_KEY from environment."
+    language: javascript
+    lines: 140
+
+  - file: geminiService.ts
+    path: /Users/ianbhatt/Downloads/voice-helper/services/geminiService.ts
+    purpose: "Client-side service — calls /api/transcribe and /api/tts endpoints"
+    key_elements:
+      - element: transcribeAudio
+        type: function
+        location: "geminiService.ts:8-22"
+        description: "Sends base64Audio + mimeType to server, returns TranscriptionResult {text, isError}. No retry logic, no N-best handling, no confidence scores."
+      - element: generateSpeech
+        type: function
+        location: "geminiService.ts:24-42"
+        description: "Sends text to /api/tts, returns base64 audio data for playback."
+    language: typescript
+    lines: 55
+
+  - file: useAudioRecorder.ts
+    path: /Users/ianbhatt/Downloads/voice-helper/hooks/useAudioRecorder.ts
+    purpose: "React hook for MediaRecorder-based audio capture"
+    key_elements:
+      - element: startRecording
+        type: function
+        location: "useAudioRecorder.ts:11-26"
+        description: "Uses navigator.mediaDevices.getUserMedia({audio: true}) with default constraints — no sampleRate, no channelCount, no echoCancellation config. Records as audio/webm or audio/mp4."
+      - element: stopRecording
+        type: function
+        location: "useAudioRecorder.ts:28-47"
+        description: "Assembles Blob from chunks, releases mic stream. No audio preprocessing pipeline."
+    language: typescript
+    lines: 52
+
+  - file: audioUtils.ts
+    path: /Users/ianbhatt/Downloads/voice-helper/utils/audioUtils.ts
+    purpose: "Audio utility functions — base64 conversion, WAV header creation, playback"
+    key_elements:
+      - element: blobToBase64
+        type: function
+        location: "audioUtils.ts:1-9"
+        description: "Converts audio Blob to base64 string for API transmission. No preprocessing, no normalization."
+      - element: createWavHeader
+        type: function
+        location: "audioUtils.ts:19-40"
+        description: "Creates WAV header for 24000Hz mono 16-bit PCM — used for TTS playback, not for recording preprocessing."
+    language: typescript
+    lines: 80
+
+  - file: types.ts
+    path: /Users/ianbhatt/Downloads/voice-helper/types.ts
+    purpose: "TypeScript type definitions"
+    key_elements:
+      - element: TranscriptionResult
+        type: interface
+        location: "types.ts:9-12"
+        description: "Simple {text: string, isError: boolean} — no confidence score, no alternatives, no metadata."
+      - element: AppState
+        type: enum
+        location: "types.ts:1-7"
+        description: "UI states: IDLE, RECORDING, TRANSCRIBING, REVIEW, PLAYING"
+    language: typescript
+    lines: 12
+
+  - file: package.json
+    path: /Users/ianbhatt/Downloads/voice-helper/package.json
+    purpose: "Project manifest"
+    key_elements:
+      - element: "@google/genai"
+        type: variable
+        location: "package.json:11"
+        description: "Google GenAI SDK v1.0.0+ — the primary AI dependency"
+    language: json
+    lines: 24
+
+patterns_found:
+  - category: architecture
+    pattern: "Single-pass zero-shot transcription"
+    description: "The entire transcription pipeline is a single Gemini API call with no preprocessing, no multi-hypothesis generation, no post-processing correction, and no speaker adaptation."
+    examples:
+      - file: server.js
+        location: "server.js:79-89"
+        snippet: |
+          const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: { parts: [
+              { inlineData: { mimeType: mimeType || 'audio/webm', data: base64Audio } },
+              { text: PROMPT_TEXT },
+            ]},
+            config: { temperature: 1, tools: [] },
+          });
+    prevalence: common
+
+  - category: architecture
+    pattern: "No audio preprocessing"
+    description: "Raw MediaRecorder output is sent directly to the API. No gain normalization, no compression, no filtering, no silence trimming, no sample rate control."
+    examples:
+      - file: useAudioRecorder.ts
+        location: "useAudioRecorder.ts:13"
+        snippet: "const stream = await navigator.mediaDevices.getUserMedia({ audio: true });"
+    prevalence: common
+
+  - category: architecture
+    pattern: "No structured output"
+    description: "Gemini returns free-form text. No JSON schema for confidence scores, alternatives, or metadata. The Gemini API fully supports response_json_schema with structured outputs."
+    examples:
+      - file: server.js
+        location: "server.js:88"
+        snippet: "const text = typeof response.text === 'function' ? await response.text() : response.text;"
+    prevalence: common
+
+  - category: error_handling
+    pattern: "Binary error state"
+    description: "TranscriptionResult only has isError boolean — no granularity for confidence, partial results, or retry strategies."
+    examples:
+      - file: types.ts
+        location: "types.ts:9-12"
+        snippet: |
+          export interface TranscriptionResult {
+            text: string;
+            isError: boolean;
+          }
+    prevalence: common
+
+  - category: naming
+    pattern: "Service singleton pattern"
+    description: "GeminiService exported as singleton instance"
+    examples:
+      - file: geminiService.ts
+        location: "geminiService.ts:44"
+        snippet: "export const geminiService = new GeminiService();"
+    prevalence: common
+
+related_architecture:
+  components_relevant_to_domain:
+    - component: "Express Backend (server.js)"
+      responsibility: "Proxies Gemini API calls, holds API key server-side, serves static frontend"
+      location: server.js
+      relationship_to_domain: "This is the primary integration point — all transcription and TTS calls flow through here"
+    - component: "GeminiService (client)"
+      responsibility: "Client-side API abstraction for transcribe and TTS"
+      location: services/geminiService.ts
+      relationship_to_domain: "Domain entry point from UI — passes raw audio to backend"
+    - component: "useAudioRecorder (hook)"
+      responsibility: "Captures audio via MediaRecorder API"
+      location: hooks/useAudioRecorder.ts
+      relationship_to_domain: "Audio capture with no preprocessing — the raw quality of this audio directly impacts transcription accuracy"
+    - component: "audioUtils"
+      responsibility: "Base64 encoding, WAV header creation, audio playback"
+      location: utils/audioUtils.ts
+      relationship_to_domain: "Handles audio format conversion but no signal processing"
+
+  interfaces_used_by_domain:
+    - interface: "Gemini generateContent API"
+      location: "server.js:79"
+      usage_pattern: "Single call with inlineData (base64 audio) + text prompt, returns free-form text response"
+    - interface: "MediaRecorder API"
+      location: "useAudioRecorder.ts:15"
+      usage_pattern: "Default audio constraints, webm/mp4 output, no preprocessing chain"
+    - interface: "Web Audio API (available but unused)"
+      location: "Not currently used"
+      usage_pattern: "AudioContext, DynamicsCompressorNode, BiquadFilterNode, GainNode, AnalyserNode are all available in modern browsers for client-side preprocessing"
+
+  data_flow_involving_domain: |
+    1. User clicks record → MediaRecorder captures raw audio (webm/mp4) with default constraints
+    2. Chunks assembled into Blob → blobToBase64 converts to base64 string
+    3. Client POSTs {base64Audio, mimeType} to /api/transcribe
+    4. Server sends single Gemini API call: audio + zero-shot prompt → free-form text response
+    5. Server returns {text} → client displays transcription
+    6. If user confirms, text sent to /api/tts → Gemini TTS → base64 audio → playback
+
+  key_relationships_to_domain:
+    - from: useAudioRecorder.ts
+      to: audioUtils.ts
+      relationship: "calls blobToBase64 for encoding"
+    - from: geminiService.ts
+      to: server.js
+      relationship: "HTTP calls to /api/transcribe and /api/tts"
+    - from: server.js
+      to: "@google/genai SDK"
+      relationship: "calls ai.models.generateContent for transcription"
+
+related_technology_stack:
+  languages_used_in_domain:
+    - TypeScript (frontend)
+    - JavaScript (backend)
+  frameworks_used_in_domain:
+    - name: React 18.3.1
+      usage_in_domain: "UI components, hooks for audio recording"
+    - name: Express 4.19.2
+      usage_in_domain: "Backend API server proxying Gemini calls"
+    - name: Vite 5.2.11
+      usage_in_domain: "Frontend build tool and dev server"
+  libraries_used_in_domain:
+    - name: "@google/genai ^1.0.0"
+      purpose_in_domain: "Primary AI SDK — Gemini API client for transcription and TTS"
+    - name: dotenv
+      purpose_in_domain: "Environment variable loading for API_KEY"
+    - name: lucide-react
+      purpose_in_domain: "UI icons"
+  external_apis_used_in_domain:
+    - name: "Gemini 3 Flash Preview (gemini-3-flash-preview)"
+      integration_point: "server.js — ai.models.generateContent for transcription, Modality.AUDIO for TTS"
+
+related_conventions:
+  naming_patterns_in_domain: "camelCase for variables/functions, PascalCase for classes/enums, kebab-case for files"
+  structure_of_domain: "Components in components/, hooks in hooks/, services in services/, utils in utils/. Backend is single server.js file."
+  error_handling_in_domain: "Try-catch with console.error logging, binary isError flag in responses. No retry logic, no error classification."
+  testing_in_domain: "No test files found in the workspace"
+  documentation_in_domain: "README.md exists. Inline comments describe key decisions (e.g., iOS mic release)."
+
+related_dependencies:
+  internal:
+    - component: App.tsx
+      relationship_to_domain: "Orchestrates recording/transcription/playback flow"
+      direction: inbound
+    - component: RecordButton.tsx
+      relationship_to_domain: "Triggers recording start/stop"
+      direction: inbound
+    - component: TranscriptionDisplay.tsx
+      relationship_to_domain: "Displays transcription results"
+      direction: outbound
+  external:
+    - name: "@google/genai"
+      purpose_for_domain: "Gemini API client — sole AI dependency"
+    - name: "Web Audio API (browser built-in)"
+      purpose_for_domain: "Available for client-side audio preprocessing — currently unused"
+    - name: "MediaRecorder API (browser built-in)"
+      purpose_for_domain: "Audio capture — currently used with default settings"
+
+# ============================================================================
+# EXTERNAL RESEARCH FINDINGS
+# ============================================================================
+# Sources are numbered [S1]-[S35+] for cross-referencing within this document.
+# Each finding section maps to a research area from the original mission.
+# ============================================================================
+
+external_research:
+  sources:
+    # --- API Documentation ---
+    - id: S1
+      title: "Gemini Audio Understanding API"
+      url: "https://ai.google.dev/gemini-api/docs/audio-understanding"
+      type: api_documentation
+      key_findings:
+        - "Audio tokenized at 32 tokens/second; input downsampled to 16KHz regardless of source sample rate"
+        - "Supports WAV, MP3, FLAC, OGG, WebM — all formats the app could use"
+        - "Maximum ~8.4 hours / 1M tokens per prompt for Gemini 3 series"
+        - "Structured output (JSON schema) supported for audio transcription — can enforce confidence scores, alternatives, timestamps"
+        - "audioTimestamp parameter in GenerationConfig enables timestamp understanding for audio-only files"
+        - "Files API recommended for audio > 20MB"
+
+    - id: S2
+      title: "Gemini Thinking Mode"
+      url: "https://ai.google.dev/gemini-api/docs/thinking"
+      type: api_documentation
+      key_findings:
+        - "thinkingLevel supports: minimal, low, medium, high — configurable per request"
+        - "Gemini 3 Flash Preview defaults to dynamic 'high' thinking"
+        - "Thinking tokens are billed separately at reduced rates"
+        - "Higher thinking levels improve complex reasoning tasks — potentially useful for interpreting ambiguous dysarthric speech"
+        - "Can set thinkingBudget for token-level control"
+
+    - id: S3
+      title: "Gemini Structured Output / JSON Mode"
+      url: "https://ai.google.dev/gemini-api/docs/structured-output"
+      type: api_documentation
+      key_findings:
+        - "Set response_mime_type to 'application/json' and provide response_json_schema"
+        - "Supports Pydantic (Python) and Zod (JavaScript) schema definitions"
+        - "Can combine structured output with tools (Google Search, URL Context) in Gemini 3"
+        - "Best practice: use 'description' field in schema to guide model output"
+        - "Streaming supported for structured outputs"
+        - "Validation: structured output guarantees syntactically correct JSON but not semantic correctness"
+
+    - id: S4
+      title: "Gemini Prompting Strategies"
+      url: "https://ai.google.dev/gemini-api/docs/prompting-strategies"
+      type: api_documentation
+      key_findings:
+        - "Few-shot examples strongly recommended over zero-shot for complex tasks"
+        - "Gemini 3 specific: use XML tags for structure, explicit planning instructions improve output"
+        - "Temperature=1.0 is recommended for Gemini 3 models (matches current app config)"
+        - "Self-critique pattern: instruct model to evaluate and revise its own output"
+        - "Context-first ordering: provide context/examples before instructions"
+
+    - id: S5
+      title: "Gemini System Instructions"
+      url: "https://ai.google.dev/gemini-api/docs/text-generation"
+      type: api_documentation
+      key_findings:
+        - "system_instruction config field sets persistent persona/constraints across multi-turn conversations"
+        - "System instructions persist across all turns in a chat session"
+        - "Can define expert persona, output format constraints, domain knowledge"
+
+    - id: S6
+      title: "Vertex AI Audio Understanding"
+      url: "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/audio-understanding"
+      type: api_documentation
+      key_findings:
+        - "Gemini 3.1 Pro Preview, Gemini 3 Flash Preview, Gemini 2.5 series all support audio transcription"
+        - "Max ~8.4 hours per prompt, supports same audio formats"
+        - "audioTimestamp parameter required for accurate timestamp generation"
+        - "Limitation: 'models that support audio might make mistakes recognizing sound that is not speech'"
+
+    - id: S7
+      title: "Cloud Speech-to-Text Enhanced Models"
+      url: "https://docs.cloud.google.com/speech-to-text/docs/enhanced-models"
+      type: api_documentation
+      key_findings:
+        - "Enhanced phone_call and video models available — optimized for specific audio sources"
+        - "Model adaptation available for domain-specific vocabulary"
+        - "Medical models listed in navigation — specialized for clinical vocabulary"
+        - "V2 API recommended for new projects; V1 still documented"
+
+    # --- Web Audio API ---
+    - id: S8
+      title: "MDN Web Audio API"
+      url: "https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API"
+      type: api_documentation
+      key_findings:
+        - "Full audio processing graph available in browser: AudioContext, MediaStreamAudioSourceNode"
+        - "DynamicsCompressorNode: loudness normalization with threshold, knee, ratio, attack, release"
+        - "BiquadFilterNode: lowpass, highpass, bandpass, notch, allpass, peaking, lowshelf, highshelf"
+        - "GainNode: volume control/amplification"
+        - "AnalyserNode: FFT analysis for visualizing/detecting signal quality"
+        - "AudioWorklet: custom DSP processing in separate thread"
+        - "OfflineAudioContext: process audio without real-time constraint"
+        - "Can chain: MediaStream → GainNode → DynamicsCompressor → BiquadFilter → MediaRecorder"
+
+    - id: S9
+      title: "MDN DynamicsCompressorNode"
+      url: "https://developer.mozilla.org/en-US/docs/Web/API/DynamicsCompressorNode"
+      type: api_documentation
+      key_findings:
+        - "Properties: threshold (dB), knee (dB), ratio, reduction (read-only), attack (seconds), release (seconds)"
+        - "Default values: threshold=-24, knee=30, ratio=12, attack=0.003, release=0.25"
+        - "Purposes: normalize loudness variation, prevent clipping, boost quiet speech"
+        - "Real-time processing — can be inserted into MediaRecorder pipeline"
+
+    - id: S10
+      title: "MDN AnalyserNode"
+      url: "https://developer.mozilla.org/en-US/docs/Web/API/AnalyserNode"
+      type: api_documentation
+      key_findings:
+        - "getFloatFrequencyData: frequency-domain analysis for signal quality assessment"
+        - "getByteTimeDomainData: time-domain waveform for silence detection/VAD"
+        - "fftSize configurable: 32 to 32768 samples"
+        - "Can analyze audio in real-time to detect recording quality issues"
+
+    # --- Academic Papers: Dysarthric ASR + LLM Correction ---
+    - id: S11
+      title: "Towards Robust Dysarthric Speech Recognition: LLM-Agent Post-ASR Correction Beyond WER"
+      authors: "Zheng, Dong, Phukon, Hasegawa-Johnson, Yoo"
+      year: 2026
+      venue: "ICASSP 2026"
+      arxiv: "2601.21347"
+      type: academic_paper
+      key_findings:
+        - "LLM-based Judge-Editor agent over top-k ASR hypotheses: keeps high-confidence spans, rewrites uncertain segments"
+        - "Operates in both zero-shot and fine-tuned modes"
+        - "Released SAP-Hypo5: largest benchmark for dysarthric speech correction"
+        - "14.51% WER reduction + substantial semantic gains: +7.59pp MENLI, +7.66pp Slot Micro F1"
+        - "CRITICAL INSIGHT: WER is highly sensitive to domain shift; semantic metrics correlate more closely with downstream task performance"
+        - "Implication for Voice Helper: semantic fidelity may matter more than exact word accuracy for communication"
+
+    - id: S12
+      title: "Zero-Shot Recognition of Dysarthric Speech Using Commercial ASR and MLLMs"
+      authors: "Alsayegh, Masood"
+      year: 2025
+      venue: "arXiv preprint"
+      arxiv: "2512.17474"
+      type: academic_paper
+      key_findings:
+        - "Evaluated 8 systems on TORGO: AssemblyAI, Whisper large-v3, Deepgram Nova-3, Nova-3 Medical, GPT-4o, GPT-4o Mini, Gemini 2.5 Pro, Gemini 2.5 Flash"
+        - "Severity-dependent degradation: mild dysarthria 3-5% WER; severe dysarthria >49% WER across ALL systems"
+        - "Verbatim-transcription prompt: GPT-4o achieves -7.36pp WER reduction consistently; Gemini variants DEGRADE with same prompt"
+        - "CRITICAL FOR VOICE HELPER: Prompt engineering effects are architecture-specific — what works for GPT may hurt Gemini"
+        - "Semantic metrics show communicative intent partially recoverable despite high WER"
+        - "Establishes empirical baselines for assistive voice interface deployment"
+
+    - id: S13
+      title: "Exploring Generative Error Correction for Dysarthric Speech Recognition"
+      authors: "La Quatra, Koudounas, Salerno, Siniscalchi"
+      year: 2025
+      venue: "Interspeech 2025"
+      arxiv: "2505.20163"
+      type: academic_paper
+      key_findings:
+        - "Two-stage framework: cutting-edge ASR models + LLM-based generative error correction (GER)"
+        - "Different configurations of model scales and training strategies tested"
+        - "Hypothesis selection improves transcription accuracy"
+        - "Works well on structured and spontaneous speech; challenges remain for single-word recognition"
+        - "Demonstrates complementary roles of acoustic and linguistic modeling"
+
+    - id: S14
+      title: "Bridging ASR and LLMs for Dysarthric Speech Recognition: Benchmarking Self-Supervised and Generative Approaches"
+      authors: "Aboeitta, Sharshar, Nafea, Shehata"
+      year: 2025
+      venue: "arXiv preprint"
+      arxiv: "2508.08027"
+      type: academic_paper
+      key_findings:
+        - "Benchmarks Wav2Vec, HuBERT, Whisper with CTC, seq2seq, and LLM-enhanced decoding (BART, GPT-2, Vicuna)"
+        - "LLM-enhanced decoding improves dysarthric ASR by leveraging linguistic constraints for phoneme restoration and grammatical correction"
+        - "Analyzes recognition errors across severity levels"
+        - "Generalization across datasets remains challenging"
+
+    - id: S15
+      title: "Confidence-Guided Error Correction for Disordered Speech Recognition"
+      authors: "Hernandez, Arias Vergara, Maier, Pérez-Toro"
+      year: 2025
+      venue: "Preprint submitted to ICASSP"
+      arxiv: "2509.25048"
+      type: academic_paper
+      key_findings:
+        - "Word-level confidence scores embedded directly into LLM prompts for correction"
+        - "Confidence-aware approach directs LLM to uncertain ASR regions, reduces overcorrection"
+        - "Fine-tuned LLaMA 3.1 for error correction"
+        - "10% relative WER reduction on SAP spontaneous speech; 47% reduction on TORGO vs naive LLM correction"
+        - "KEY INSIGHT: Confidence-informed prompting prevents the LLM from 'fixing' already-correct words"
+
+    - id: S16
+      title: "HyPoradise: An Open Baseline for Generative Speech Recognition with LLMs"
+      authors: "Chen et al."
+      year: 2023
+      venue: "NeurIPS 2023"
+      arxiv: "2309.15701"
+      type: academic_paper
+      key_findings:
+        - "N-best hypothesis input to LLM for error correction"
+        - "334K+ hypothesis-transcription pairs dataset"
+        - "Surpasses traditional N-best re-ranking upper bound"
+        - "LLM can recover tokens missing from ALL N-best candidates — not just selecting from hypotheses but generating novel corrections"
+        - "Foundational paper establishing GER (Generative Error Correction) paradigm"
+
+    - id: S17
+      title: "Fewer Hallucinations, More Verification: A Three-Stage LLM-Based Framework for ASR Error Correction"
+      authors: "Fang, Chen, Peng, Li, Xi, Zhang, Zhong"
+      year: 2025
+      venue: "ASRU"
+      arxiv: "2505.24347"
+      type: academic_paper
+      key_findings:
+        - "RLLM-CF framework: (1) error pre-detection, (2) chain-of-thought sub-tasks iterative correction, (3) reasoning process verification"
+        - "No additional data or model fine-tuning required — uses multi-pass programming"
+        - "GPT-4o with framework achieves 21%, 11%, 9%, 11.4% relative CER/WER reductions on AISHELL/LibriSpeech"
+        - "KEY FOR VOICE HELPER: Three-stage approach prevents LLM hallucination during correction — critical for assistive applications"
+        - "Chain-of-thought sub-tasks break correction into manageable steps"
+
+    - id: S18
+      title: "Enhancing AAC Software for Dysarthric Speakers in e-Health Settings: Evaluation Using TORGO"
+      authors: "Hui, Zhang, Mohan"
+      year: 2024
+      venue: "arXiv preprint"
+      arxiv: "2411.00980"
+      type: academic_paper
+      key_findings:
+        - "SOTA ASR (Whisper, Wav2vec2.0) produces extremely high WER for dysarthric speakers on TORGO"
+        - "Whispering-LLaMA multimodal generative error correction attempted as second-pass"
+        - "N-gram language models provide modest improvement"
+        - "Prompt-overlap is a known confound in TORGO evaluation — proposed algorithm to break it"
+        - "Highlights equity gap: much more work needed for atypical speakers"
+
+    # --- Academic Papers: Speaker Adaptation & Personalization ---
+    - id: S19
+      title: "The Universal Personalizer: Few-Shot Dysarthric Speech Recognition via Meta-Learning"
+      authors: "Agarwal, Zhang, Yu, Wang"
+      year: 2025
+      venue: "arXiv preprint"
+      arxiv: "2509.15516"
+      type: academic_paper
+      key_findings:
+        - "Hybrid meta-training for zero-shot and few-shot on-the-fly personalization via in-context learning (ICL)"
+        - "13.9% WER on Euphonia (vs 17.5% speaker-independent baseline)"
+        - "5.3% WER on SAP Test-1 (outperforms challenge winner at 5.97%)"
+        - "Random same-speaker examples yield 40% WER reduction — validates active personalization"
+        - "Static text curation fails to beat random baseline; oracle similarity reveals headroom"
+        - "INSIGHT FOR VOICE HELPER: Even random previous recordings from the same speaker dramatically improve recognition"
+
+    - id: S20
+      title: "Two-Stage Adaptation for Non-Normative Speech Recognition: Revisiting Speaker-Independent Initialization for Personalization"
+      authors: "Jiang, Qi, Huo, Gao, Chen"
+      year: 2026
+      venue: "Submitted to Interspeech 2026"
+      arxiv: "2603.15261"
+      type: academic_paper
+      key_findings:
+        - "Two-stage: speaker-independent fine-tuning (SI-FT) on multi-speaker non-normative data → speaker-specific fine-tuning (SS-FT)"
+        - "Tested on AphasiaBank and UA-Speech with Whisper-Large-v3 and Qwen3-ASR"
+        - "Consistently improves personalization vs direct SS-FT"
+        - "Manageable out-of-domain trade-offs"
+        - "RELEVANT: Covers both dysarthric AND aphasic speech — matches Voice Helper's target user (post-stroke with both conditions)"
+
+    - id: S21
+      title: "A Self-Training Approach for Whisper to Enhance Long Dysarthric Speech Recognition"
+      authors: "Wang, Zhou, Zhao, Qin"
+      year: 2025
+      venue: "Interspeech 2025"
+      arxiv: "2506.22810"
+      type: academic_paper
+      key_findings:
+        - "Self-training method enhanced Whisper for long dysarthric speech"
+        - "Increased training data and adapted model to handle incomplete speech segments during inference"
+        - "Achieved second place in SAP Challenge (WER and Semantic Score)"
+        - "Based on Speech Accessibility Project (SAP) — large diverse English dysarthric dataset"
+
+    # --- Academic Papers: Voice Conversion ---
+    - id: S22
+      title: "Unsupervised Rhythm and Voice Conversion to Improve ASR on Dysarthric Speech"
+      authors: "El Hajal, Hermann, Hovsepyan, Magimai-Doss"
+      year: 2025
+      venue: "Interspeech 2025"
+      arxiv: "2506.01618"
+      type: academic_paper
+      key_findings:
+        - "Dysarthric-to-healthy speech conversion using Rhythm and Voice (RnV) framework"
+        - "Syllable-based rhythm modeling suited for dysarthric speech's slow/irregular timing"
+        - "LF-MMI models with converted speech achieve significant WER reductions, especially for severe dysarthria"
+        - "Fine-tuning Whisper on converted data has minimal effect — Whisper may already be robust to these transformations"
+        - "Code available at github.com/idiap/RnV"
+
+    # --- Academic Papers: Whisper Analysis ---
+    - id: S23
+      title: "Probing Whisper for Dysarthric Speech in Detection and Assessment"
+      authors: "Yue, Kayande, Cvetkovic, Loweimi"
+      year: 2025
+      venue: "Submitted to ICASSP 2026"
+      arxiv: "2510.04219"
+      type: academic_paper
+      key_findings:
+        - "Mid-level Whisper encoder layers (13-15) most informative for dysarthric speech representation"
+        - "Fine-tuning on dysarthric speech recognition task induces only modest changes to embeddings"
+        - "Supports probing analyses to guide use of large pretrained models for pathological speech"
+        - "Suggests Whisper has some latent capacity for atypical speech even without fine-tuning"
+
+    # --- Foundational Paper ---
+    - id: S24
+      title: "Robust Speech Recognition via Large-Scale Weak Supervision (Whisper)"
+      authors: "Radford, Kim, Xu, Brockman, McLeavey, Sutskever"
+      year: 2022
+      venue: "OpenAI Technical Report"
+      arxiv: "2212.04356"
+      type: academic_paper
+      key_findings:
+        - "Trained on 680K hours of multilingual/multitask web audio"
+        - "Zero-shot transfer to diverse speech tasks"
+        - "Transformer seq2seq with sliding 30-second windows"
+        - "6 model sizes from 39M (tiny) to 1.55B (large) parameters"
+        - "English-only models (.en) perform better for English, especially at smaller sizes"
+        - "Known limitation: trained on typical web speech — performance degrades on atypical/pathological speech"
+
+    # --- Commercial Products ---
+    - id: S25
+      title: "Voiceitt — Atypical Speech Recognition App"
+      url: "https://voiceitt.com"
+      type: commercial_product
+      key_findings:
+        - "Uses personalized training: 50+ recordings from the user to build custom speech model"
+        - "Proprietary atypical speech database used as foundation"
+        - "Chrome extension + WebEx/Teams integration for real-time captioning"
+        - "AAC/AT tool designed specifically for people with speech disabilities"
+        - "PROOF OF CONCEPT: Personalized training on atypical speech works commercially"
+
+    - id: S26
+      title: "Apple Accessibility — Speech Features"
+      url: "https://www.apple.com/accessibility/speech/"
+      type: commercial_product
+      key_findings:
+        - "Personal Voice: creates personalized voice model from ~15 minutes of recordings"
+        - "Live Speech: type to speak with synthesized voice"
+        - "Vocal Shortcuts: custom sounds mapped to actions"
+        - "On-device processing for privacy"
+        - "Demonstrates that major tech companies invest in personalized speech models for accessibility"
+
+    - id: S27
+      title: "OpenAI Whisper — GitHub Repository"
+      url: "https://github.com/openai/whisper"
+      type: open_source_tool
+      key_findings:
+        - "97.4K stars, MIT license, actively maintained (v20250625)"
+        - "turbo model: 809M params, ~8x faster than large, optimized large-v3"
+        - "Performance varies widely by language; English models (.en) better for small/medium sizes"
+        - "Sliding 30-second window processing for long audio"
+        - "Community extensions available for various platforms"
+
+    # --- Arxiv Search Catalogs (discovery sources, not individually fetched) ---
+    - id: S28
+      title: "Arxiv Search: 'dysarthric speech recognition'"
+      url: "https://arxiv.org/search/?query=dysarthric+speech+recognition&searchtype=all"
+      type: search_catalog
+      key_findings:
+        - "89 papers found — active and growing research field"
+        - "Strong cluster of 2025-2026 papers at Interspeech, ICASSP, EMNLP, NAACL"
+        - "Recurring themes: speaker adaptation, data augmentation (TTS-based), LLM correction, voice conversion"
+        - "Speech Accessibility Project (SAP) Challenge driving standardized evaluation"
+        - "Notable papers not individually fetched: DyPCL (NAACL 2025), Perceiver-Prompt (Interspeech 2024), DuTa-VC, CDSD database"
+
+    - id: S29
+      title: "Arxiv Search: 'LLM ASR error correction'"
+      url: "https://arxiv.org/search/?query=LLM+ASR+error+correction&searchtype=all"
+      type: search_catalog
+      key_findings:
+        - "68 papers found — rapidly growing subfield"
+        - "Key techniques: GER (Generative Error Correction), RAG-enhanced correction, chain-of-thought correction, confidence-guided correction"
+        - "Domain-specific applications: medical (MedSpeak), gaming, child speech, code-switched speech"
+        - "Notable frameworks: SALSA (speedy ASR-LLM aggregation), SEAL (speaker error correction), LegoSLM (connecting LLM with speech encoder)"
+
+    # --- Additional referenced papers from search results ---
+    - id: S30
+      title: "Idiosyncratic Versus Normative Modeling of Atypical Speech Recognition: Dysarthric Case Studies"
+      authors: "Raja, Ganesan, Syamkumar, Banerjee, Schwartz"
+      year: 2025
+      venue: "EMNLP 2025"
+      arxiv: "2509.16718"
+      type: academic_paper
+      key_findings:
+        - "Compares fully personalized (idiosyncratic) vs generalizable models for atypical speech"
+        - "Whisper performs poorly on atypical speech — confirms need for adaptation"
+        - "Modeling strategies that both generalize and handle individual variation investigated"
+
+    - id: S31
+      title: "Personalized Fine-Tuning with Controllable Synthetic Speech from LLM-Generated Transcripts"
+      authors: "Wagner et al."
+      year: 2025
+      venue: "Interspeech 2025"
+      arxiv: "2505.12991"
+      type: academic_paper
+      key_findings:
+        - "Uses LLM-generated transcripts + TTS to create controllable synthetic dysarthric speech for personalized fine-tuning"
+        - "Submitted to SAP Challenge — demonstrates TTS-based data augmentation for personalization"
+
+    - id: S32
+      title: "Improved Dysarthric Speech to Text Conversion via TTS Personalization"
+      authors: "Mihajlik et al."
+      year: 2025
+      venue: "arXiv preprint"
+      arxiv: "2508.06391"
+      type: academic_paper
+      key_findings:
+        - "Case study: custom STT system for a Hungarian speaker with severe dysarthria"
+        - "TTS personalization creates synthetic training data matching the target speaker"
+        - "Demonstrates feasibility of single-speaker severe dysarthria STT"
+
+    - id: S33
+      title: "Retrieval-Augmented Self-Taught Reasoning Model with Adaptive Chain-of-Thought for ASR Named Entity Correction"
+      authors: "An et al."
+      year: 2026
+      venue: "arXiv preprint"
+      arxiv: "2602.12287"
+      type: academic_paper
+      key_findings:
+        - "RAG + adaptive chain-of-thought for ASR named entity correction"
+        - "Addresses catastrophic failures from misrecognized domain-specific terms"
+        - "Relevant for Voice Helper: proper nouns and personal names (e.g., 'Satish Bhatt') are frequently misrecognized"
+
+    - id: S34
+      title: "Aligning ASR Evaluation with Human and LLM Judgments: Intelligibility Metrics"
+      authors: "Phukon, Zheng, Hasegawa-Johnson"
+      year: 2025
+      venue: "Interspeech 2025"
+      arxiv: "2506.16528"
+      type: academic_paper
+      key_findings:
+        - "Traditional WER/CER fail to capture intelligibility for dysarthric speech"
+        - "Semantic alignment matters more than exact word matches"
+        - "Proposes phonetic, semantic, and NLI approaches for evaluation"
+        - "Aligns with S11 finding that semantic metrics better predict downstream performance"
+
+    - id: S35
+      title: "On-the-fly Routing for Zero-shot MoE Speaker Adaptation of Speech Foundation Models"
+      authors: "Hu et al."
+      year: 2025
+      venue: "Interspeech 2025"
+      arxiv: "2505.22072"
+      type: academic_paper
+      key_findings:
+        - "MoE-based (Mixture of Experts) speaker adaptation for foundation models"
+        - "Zero-shot adaptation and real-time processing while incorporating domain knowledge"
+        - "Speaker identity vectors used to route through specialized expert modules"
+
+    - id: S36
+      title: "DARS: Dysarthria-Aware Rhythm-Style Synthesis for ASR Enhancement"
+      authors: "Wu et al."
+      year: 2026
+      venue: "APSIPA ASC 2025"
+      arxiv: "2603.01369"
+      type: academic_paper
+      key_findings:
+        - "TTS-based data augmentation that accurately models pathological rhythm and acoustic style"
+        - "Addresses failure of existing TTS augmentation to capture dysarthric speech characteristics"
+
+  synthesis:
+    two_stage_asr_llm_correction:
+      description: "Most impactful improvement path for Voice Helper"
+      evidence:
+        - "S11: LLM Judge-Editor over top-k hypotheses achieves 14.51% WER reduction on dysarthric speech"
+        - "S12: All systems (including Gemini) exceed 49% WER on severe dysarthria in zero-shot mode"
+        - "S13: Two-stage ASR+GER framework effective on structured and spontaneous speech"
+        - "S15: Confidence-guided prompting achieves 47% WER reduction on TORGO"
+        - "S16: HyPoradise proves LLM can recover tokens missing from all N-best candidates"
+        - "S17: Three-stage RLLM-CF prevents hallucination — critical for assistive use"
+      applicability_to_voice_helper: |
+        HIGH. Current architecture is single-pass zero-shot with no correction layer.
+        Implementation path:
+        1. Generate multiple transcription hypotheses (via separate Gemini calls with different temperature/prompts, or via structured output requesting alternatives)
+        2. Feed hypotheses to a correction LLM call with chain-of-thought reasoning
+        3. Use confidence estimation to avoid overcorrection
+        Key challenge: Gemini API doesn't natively produce N-best ASR hypotheses like traditional ASR systems.
+        Workaround: Multiple calls with varying temperature, or request alternatives in structured output schema.
+
+    prompt_engineering_for_gemini:
+      description: "Immediate, no-cost improvement for current architecture"
+      evidence:
+        - "S4: Few-shot examples strongly improve over zero-shot; use XML tags for Gemini 3"
+        - "S5: System instructions set persistent expert persona across turns"
+        - "S12: CRITICAL — verbatim prompts DEGRADE Gemini (improve GPT-4o). Prompt engineering is architecture-specific."
+        - "S2: thinkingLevel='high' may help interpret ambiguous dysarthric speech"
+        - "S17: Chain-of-thought sub-tasks improve error correction quality"
+      applicability_to_voice_helper: |
+        HIGH. Current prompt is basic zero-shot with minimal context.
+        Immediate improvements:
+        1. Add system_instruction with expert persona (speech-language pathologist, familiar with post-stroke aphasia/dysarthria)
+        2. Include few-shot examples of dysarthric utterances and their correct interpretations
+        3. Use XML-tagged structure for Gemini 3: <context>, <audio>, <instructions>
+        4. Add domain vocabulary hints (family names, common phrases the user might say)
+        5. Enable thinkingLevel for complex interpretations
+        WARNING: S12 shows Gemini-specific prompt effects — must test empirically, not assume GPT-tested strategies transfer.
+
+    structured_output_and_confidence:
+      description: "Enable richer transcription results with confidence scoring and alternatives"
+      evidence:
+        - "S1: Gemini API supports JSON schema for audio transcription"
+        - "S3: response_json_schema with Pydantic/Zod integration"
+        - "S15: Confidence scores critical for directing correction to uncertain regions"
+        - "S11: Semantic scores alongside WER needed for meaningful evaluation"
+        - "S34: WER/CER inadequate for dysarthric speech — semantic metrics needed"
+      applicability_to_voice_helper: |
+        HIGH. Current TranscriptionResult only has {text, isError}.
+        Implementation:
+        1. Define JSON schema requesting: primary_transcription, confidence (0-1), alternative_interpretations[], thinking_notes
+        2. Use confidence to trigger re-recording prompt for very low scores
+        3. Display alternatives for user selection when confidence is moderate
+        4. Track semantic consistency across conversation turns
+
+    audio_preprocessing:
+      description: "Client-side audio enhancement before API submission"
+      evidence:
+        - "S8-S10: Web Audio API provides full DSP toolkit in browser"
+        - "S1: Gemini downsamples to 16KHz — preprocessing should target this"
+        - "S9: DynamicsCompressorNode normalizes loudness variation (common in dysarthric speech)"
+        - "S22: Rhythm/prosody normalization helps severe dysarthria"
+      applicability_to_voice_helper: |
+        MEDIUM. Gemini's 16KHz downsampling means high-frequency enhancement is wasted.
+        However, loudness normalization and noise reduction likely help.
+        Implementation:
+        1. AudioContext processing chain: MediaStream → GainNode → DynamicsCompressorNode → MediaRecorder
+        2. Configure compressor for speech: threshold=-30dB, ratio=4, knee=10
+        3. Optionally add AnalyserNode to detect silence/noise and prompt user
+        4. CAUTION: Unknown whether Gemini's native audio processing already handles normalization.
+        Must A/B test preprocessing ON vs OFF.
+
+    speaker_personalization:
+      description: "Adapt recognition to the specific user over time"
+      evidence:
+        - "S19: Random same-speaker examples yield 40% WER reduction"
+        - "S20: Two-stage SI→SS adaptation consistently improves on direct fine-tuning; covers aphasic speech"
+        - "S25: Voiceitt requires 50+ recordings for personalized model"
+        - "S26: Apple Personal Voice uses ~15 minutes of recordings"
+        - "S30: Both idiosyncratic and generalizable approaches have merit"
+        - "S31-S32: TTS-based augmentation can create synthetic training data from limited samples"
+      applicability_to_voice_helper: |
+        MEDIUM-HIGH (longer term). Cannot fine-tune Gemini via API, but can emulate personalization:
+        1. Rolling context: maintain last N successful transcription pairs in conversation history
+        2. Few-shot injection: include verified transcription examples in each prompt
+        3. Vocabulary profile: build and maintain a vocabulary list of words the user commonly says
+        4. Session memory: accumulate successful transcriptions across sessions, inject as examples
+        Key insight from S19: even RANDOM previous recordings from the same speaker help dramatically.
+
+    evaluation_beyond_wer:
+      description: "Use semantic metrics for meaningful quality assessment"
+      evidence:
+        - "S11: WER sensitive to domain shift; semantic metrics correlate better with downstream performance"
+        - "S12: Communicative intent partially recoverable despite high WER"
+        - "S34: WER/CER fail to capture intelligibility; phonetic/semantic/NLI approaches needed"
+      applicability_to_voice_helper: |
+        HIGH for development/iteration. When testing improvements:
+        1. Don't just measure WER — assess whether the MEANING is correct
+        2. Use LLM-as-judge to evaluate semantic similarity between transcription and intended meaning
+        3. Track user confirmation rate as real-world semantic accuracy proxy
+        4. The user's grandpa may appreciate "got the gist right" more than "every word exact"
+
+domain_security_considerations:
+  sensitive_areas:
+    - area: "API Key Management"
+      location: server.js
+      concern: "API_KEY loaded from environment, proxied server-side — correctly implemented"
+    - area: "Audio Data Privacy"
+      location: "server.js /api/transcribe"
+      concern: "Raw audio of vulnerable user (elderly, post-stroke) sent to Google API. Consider: data retention policies, HIPAA if used in healthcare context, user consent."
+    - area: "Request Size"
+      location: "server.js:18"
+      concern: "50MB JSON limit — appropriate for audio but should validate/sanitize input"
+  authentication_patterns_in_domain: "No user authentication — single-user local app assumption"
+  authorization_patterns_in_domain: "API key is sole access control"
+  data_validation_in_domain: "Minimal — mimeType sanitized for codec params, base64Audio presence checked"
+
+testing_patterns:
+  framework: "None — no test files found"
+  coverage_areas: []
+  test_organization: "N/A"
+  mock_patterns: []
+
+open_questions:
+  - question: "Does client-side audio preprocessing (compression, normalization) improve or degrade Gemini's transcription quality given its internal 16KHz downsampling?"
+    context: "Gemini downsamples to 16KHz internally. Unknown whether its preprocessing already normalizes loudness. Adding compression could either help (consistent levels) or hurt (added artifacts)."
+    type: decision_blocker
+    affects: ["audio_preprocessing_implementation"]
+
+  - question: "Can Gemini 3 Flash Preview be prompted to generate multiple alternative transcription hypotheses in a single API call, or does it require multiple calls?"
+    context: "The two-stage ASR+LLM pattern requires N-best hypotheses. Traditional ASR outputs these natively. Gemini's structured output might support alternatives[] in schema, but this is unverified."
+    type: decision_blocker
+    affects: ["two_stage_correction_implementation"]
+
+  - question: "What is the optimal prompt structure for Gemini 3 specifically for dysarthric speech, given that S12 showed Gemini-specific degradation with prompts that help GPT-4o?"
+    context: "Must empirically test various prompt strategies (few-shot, system instruction, XML tags, thinking mode) specifically on Gemini 3 Flash with the target user's speech samples."
+    type: research
+    affects: ["prompt_engineering_implementation"]
+
+  - question: "How should rolling context / conversation history be managed given Gemini's token limits and the app's current stateless request model?"
+    context: "S19 shows same-speaker examples yield 40% WER reduction. Implementation requires maintaining state across requests, currently not supported."
+    type: research
+    affects: ["speaker_personalization_implementation"]
+
+  - question: "Is Gemini Live API (real-time streaming) more appropriate than batch transcription for this use case?"
+    context: "S6 shows Gemini 2.5 Flash supports Live API with native audio. Real-time feedback might help the user know when their speech is being understood."
+    type: nice_to_know
+    affects: ["architecture_redesign"]
+
+gaps:
+  - area: "Empirical Gemini-specific prompt testing"
+    description: "No published research tests Gemini 3 Flash specifically on dysarthric speech with various prompt strategies. S12 tested Gemini 2.5 Pro/Flash. The Gemini 3 Flash Preview model may behave differently."
+    impact: decision_blocker
+    affects: ["prompt_engineering_implementation"]
+
+  - area: "Audio preprocessing impact on Gemini"
+    description: "No published research evaluates whether client-side audio preprocessing helps or hurts Gemini's native audio understanding pipeline. Gemini may already handle normalization internally."
+    impact: research_blocker
+    affects: ["audio_preprocessing_implementation"]
+
+  - area: "Gemini N-best hypothesis generation"
+    description: "Unclear whether Gemini's structured output can produce ranked alternative transcriptions comparable to traditional ASR N-best lists for the GER pattern."
+    impact: decision_blocker
+    affects: ["two_stage_correction_implementation"]
+
+  - area: "Privacy and data handling"
+    description: "No privacy policy or data handling documentation. User is elderly/vulnerable — audio data sent to Google API with unknown retention."
+    impact: nice_to_know
+    affects: ["deployment_considerations"]
+
+  - area: "User testing and feedback loop"
+    description: "No mechanism to capture user corrections/confirmations to improve prompts over time. The app has REVIEW state but unclear if corrections are stored."
+    impact: nice_to_know
+    affects: ["speaker_personalization_implementation"]
+
+# ============================================================================
+# PRIORITY-RANKED IMPLEMENTATION RECOMMENDATIONS SUMMARY
+# (Factual ranking based on evidence strength and implementation feasibility)
+# ============================================================================
+# 1. PROMPT ENGINEERING (S4, S5, S12) — Highest ROI, zero infrastructure cost
+#    Evidence: Few-shot > zero-shot consistently; system_instruction available
+#    Risk: Gemini-specific effects require empirical testing
+#
+# 2. STRUCTURED OUTPUT (S1, S3, S15) — Enables confidence scoring and alternatives
+#    Evidence: API fully supports JSON schemas; confidence critical for correction
+#    Risk: Low — well-documented API feature
+#
+# 3. TWO-STAGE CORRECTION (S11, S13, S15-S17) — Largest WER improvement potential
+#    Evidence: 14-47% WER reductions across multiple papers
+#    Risk: Medium — requires additional API call, latency increase
+#
+# 4. AUDIO PREPROCESSING (S8-S10) — Quick client-side improvement
+#    Evidence: Web Audio API readily available; compression helps variable loudness
+#    Risk: Medium — unknown interaction with Gemini's processing
+#
+# 5. ROLLING CONTEXT / PERSONALIZATION (S19, S20) — Long-term improvement
+#    Evidence: 40% WER reduction from same-speaker examples
+#    Risk: Medium — requires state management, storage

@@ -7,15 +7,50 @@ export const useAudioRecorder = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
+      // Disable browser audio processing — Gemini handles it better with raw audio
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        }
+      });
+
+      // Web Audio preprocessing chain for dysarthric speech
+      const audioCtx = new AudioContext();
+      audioCtxRef.current = audioCtx;
+
+      const source = audioCtx.createMediaStreamSource(stream);
+
+      // Boost quiet speech by +6dB
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 2.0; // ~+6dB
+
+      // Compress dynamic range — dysarthric speech has dramatic volume variation
+      const compressor = audioCtx.createDynamicsCompressor();
+      compressor.threshold.value = -30;
+      compressor.ratio.value = 4;
+      compressor.knee.value = 10;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+
+      // Route: source → gain → compressor → destination
+      const destination = audioCtx.createMediaStreamDestination();
+      source.connect(gainNode);
+      gainNode.connect(compressor);
+      compressor.connect(destination);
+
+      streamRef.current = stream; // Keep original stream ref to release mic
+
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      const mediaRecorder = new MediaRecorder(destination.stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
+
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
@@ -39,6 +74,12 @@ export const useAudioRecorder = () => {
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
           streamRef.current = null;
+        }
+
+        // Close AudioContext
+        if (audioCtxRef.current) {
+          audioCtxRef.current.close().catch(() => {});
+          audioCtxRef.current = null;
         }
         
         setIsRecording(false);

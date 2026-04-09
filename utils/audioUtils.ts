@@ -58,7 +58,7 @@ export const playAudioFromBase64 = async (base64Audio: string): Promise<void> =>
     try {
       const pcmData = decodeBase64(base64Audio);
       const wavHeader = createWavHeader(pcmData.length);
-      const wavBlob = new Blob([wavHeader, pcmData], { type: 'audio/wav' });
+      const wavBlob = new Blob([wavHeader.buffer as ArrayBuffer, pcmData.buffer as ArrayBuffer], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(wavBlob);
       const audio = new Audio(audioUrl);
       

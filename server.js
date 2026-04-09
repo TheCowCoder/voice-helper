@@ -821,10 +821,14 @@ app.post('/api/calibrate', async (req, res) => {
       });
     }
 
-    // Update correction count on profile
+    // Update correction count on profile + training progress
     await db.collection('profiles').updateOne(
       { userId: new ObjectId(userId) },
-      { $inc: { correctionCount: 1 }, $set: { updatedAt: new Date() } },
+      {
+        $inc: { correctionCount: 1, 'training.phrasesCompleted': 1 },
+        $set: { updatedAt: new Date() },
+        $addToSet: { 'training.completedPhraseIds': phraseId }
+      },
       { upsert: true }
     );
 
@@ -832,6 +836,23 @@ app.post('/api/calibrate', async (req, res) => {
   } catch (error) {
     console.error("Calibrate API Error:", error?.message || error);
     res.status(500).json({ error: error?.message || "Failed to save calibration" });
+  }
+});
+
+// ── API: Training Progress ──
+
+app.get('/api/training-progress/:userId', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: "Database not available" });
+    const profile = await db.collection('profiles').findOne(
+      { userId: new ObjectId(req.params.userId) },
+      { projection: { training: 1 } }
+    );
+    const training = profile?.training || { phrasesCompleted: 0, completedPhraseIds: [] };
+    res.json(training);
+  } catch (error) {
+    console.error("Training progress error:", error?.message || error);
+    res.status(500).json({ error: error?.message || "Failed to fetch training progress" });
   }
 });
 

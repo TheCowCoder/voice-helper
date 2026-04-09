@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { Mic, Square, Check, RotateCcw, SkipForward } from 'lucide-react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Mic, Square, Check, RotateCcw, SkipForward, Loader2 } from 'lucide-react';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { geminiService } from '../services/geminiService';
 import { blobToBase64 } from '../utils/audioUtils';
@@ -29,25 +29,56 @@ const PHRASES: CalibrationPhrase[] = [
   { id: 20, text: "શું થયું?", language: 'gujarati', translation: "What happened?" },
 ];
 
+const ROUND_SIZE = 20;
+
+// Friendly round labels
+function getRoundLabel(round: number): { title: string; subtitle: string } {
+  const labels = [
+    { title: 'Getting Started', subtitle: 'Let\'s teach the app your voice!' },
+    { title: 'Building Momentum', subtitle: 'Great progress — keep going!' },
+    { title: 'Voice Expert', subtitle: 'The app is really learning your patterns now.' },
+    { title: 'Fine Tuning', subtitle: 'Almost perfect recognition ahead.' },
+    { title: 'Master Level', subtitle: 'You\'re a pro. Every round makes it sharper.' },
+  ];
+  return labels[Math.min(round, labels.length - 1)];
+}
+
 interface CalibrationViewProps {
   userId: string;
   onClose: () => void;
 }
 
 export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClose }) => {
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [totalCompleted, setTotalCompleted] = useState(0);
+  const [completedIds, setCompletedIds] = useState<Set<number>>(new Set());
+  const [roundIndex, setRoundIndex] = useState(0); // index within current round (0-19)
   const [heard, setHeard] = useState('');
   const [steps, setSteps] = useState<TranscriptionStep[]>([]);
   const [lastAudioBase64, setLastAudioBase64] = useState('');
   const [lastMimeType, setLastMimeType] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [saved, setSaved] = useState<Set<number>>(new Set());
+  const [roundComplete, setRoundComplete] = useState(false);
   const { isRecording, startRecording, stopRecording } = useAudioRecorder();
 
-  const phrase = PHRASES[currentIndex];
-  const progress = currentIndex;
-  const total = PHRASES.length;
-  const isDone = currentIndex >= PHRASES.length;
+  const round = Math.floor(totalCompleted / ROUND_SIZE);
+  const roundProgress = roundIndex; // phrases done in this sitting
+  const roundLabel = getRoundLabel(round);
+  const phrase = PHRASES[roundIndex];
+
+  // Load progress from server on mount
+  useEffect(() => {
+    geminiService.getTrainingProgress(userId).then(progress => {
+      setTotalCompleted(progress.phrasesCompleted || 0);
+      setCompletedIds(new Set(progress.completedPhraseIds || []));
+      // Start at the beginning of the phrase list for each new round
+      setRoundIndex(0);
+      setLoading(false);
+    }).catch(err => {
+      console.error('Failed to load training progress:', err);
+      setLoading(false);
+    });
+  }, [userId]);
 
   const initSteps = useCallback(() => {
     setSteps([
@@ -121,8 +152,15 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         mimeType: lastMimeType,
         language: phrase.language,
       });
-      setSaved(prev => new Set(prev).add(phrase.id));
-      setCurrentIndex(i => i + 1);
+      setCompletedIds(prev => new Set(prev).add(phrase.id));
+      setTotalCompleted(prev => prev + 1);
+
+      const nextIndex = roundIndex + 1;
+      if (nextIndex >= PHRASES.length) {
+        setRoundComplete(true);
+      } else {
+        setRoundIndex(nextIndex);
+      }
       setHeard('');
       setSteps([]);
       setLastAudioBase64('');
@@ -132,7 +170,12 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   };
 
   const handleSkip = () => {
-    setCurrentIndex(i => i + 1);
+    const nextIndex = roundIndex + 1;
+    if (nextIndex >= PHRASES.length) {
+      setRoundComplete(true);
+    } else {
+      setRoundIndex(nextIndex);
+    }
     setHeard('');
     setSteps([]);
     setLastAudioBase64('');
@@ -144,21 +187,39 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
     setLastAudioBase64('');
   };
 
-  if (isDone) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="w-12 h-12 text-blue-500 animate-spin" />
+      </div>
+    );
+  }
+
+  if (roundComplete) {
+    const nextRound = round + 1;
+    const nextLabel = getRoundLabel(nextRound);
     return (
       <div className="flex flex-col items-center justify-center h-full gap-6 p-8">
         <div className="text-6xl">🎉</div>
-        <h2 className="text-3xl font-bold text-slate-800">Calibration Complete!</h2>
+        <h2 className="text-3xl font-bold text-slate-800">Round Complete!</h2>
         <p className="text-xl text-slate-500 text-center max-w-md">
-          Great job! The app has learned {saved.size} speech patterns. 
-          Accuracy will improve as you use the app.
+          You&apos;ve completed {totalCompleted} total phrases across {round + 1} round{round > 0 ? 's' : ''}.
+          The app is getting better at understanding you!
         </p>
-        <button
-          onClick={onClose}
-          className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-xl font-bold rounded-2xl transition-colors"
-        >
-          Done
-        </button>
+        <div className="flex gap-4">
+          <button
+            onClick={() => { setRoundIndex(0); setRoundComplete(false); }}
+            className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-xl font-bold rounded-2xl transition-colors"
+          >
+            Start Round {nextRound + 1}: {nextLabel.title}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-8 py-4 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xl font-bold rounded-2xl transition-colors"
+          >
+            Done for now
+          </button>
+        </div>
       </div>
     );
   }
@@ -167,7 +228,10 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
     <div className="flex flex-col h-full p-5 sm:p-8 gap-5 sm:gap-8">
       {/* Header */}
       <div className="shrink-0 flex items-center justify-between">
-        <h2 className="text-3xl sm:text-4xl font-bold text-slate-800">Calibration</h2>
+        <div>
+          <h2 className="text-3xl sm:text-4xl font-bold text-slate-800">Training</h2>
+          <p className="text-lg sm:text-xl text-slate-400 font-bold">Round {round + 1}: {roundLabel.title}</p>
+        </div>
         <button onClick={onClose} className="text-slate-500 hover:text-slate-700 text-2xl sm:text-3xl font-bold px-3">
           ✕ Close
         </button>
@@ -176,13 +240,13 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       {/* Progress bar */}
       <div className="shrink-0">
         <div className="flex justify-between text-xl sm:text-2xl text-slate-500 mb-3">
-          <span>Let&apos;s help the app learn your voice!</span>
-          <span className="font-bold">{progress}/{total} phrases</span>
+          <span>{roundLabel.subtitle}</span>
+          <span className="font-bold">{roundProgress}/{PHRASES.length} this round &middot; {totalCompleted} total</span>
         </div>
         <div className="w-full h-4 sm:h-5 bg-slate-200 rounded-full overflow-hidden">
           <div
             className="h-full bg-blue-500 rounded-full transition-all duration-500"
-            style={{ width: `${(progress / total) * 100}%` }}
+            style={{ width: `${(roundProgress / PHRASES.length) * 100}%` }}
           />
         </div>
       </div>

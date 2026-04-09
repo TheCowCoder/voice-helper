@@ -168,6 +168,12 @@ export class GeminiService {
     return response.json();
   }
 
+  async getTrainingProgress(userId: string): Promise<{ phrasesCompleted: number; completedPhraseIds: number[] }> {
+    const response = await fetch(`/api/training-progress/${userId}`);
+    if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
+    return response.json();
+  }
+
   async submitCorrection(data: {
     userId: string;
     heard: string;

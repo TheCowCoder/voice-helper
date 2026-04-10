@@ -1,6 +1,6 @@
 const CORRECTIONS_KEY = 'voicehelper_pending_corrections';
 const RECENT_KEY = 'voicehelper_recent_transcriptions';
-const MAX_RECENT = 5;
+const MAX_RECENT = 3;
 
 export interface PendingCorrection {
   heard: string;

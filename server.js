@@ -100,6 +100,8 @@ CRITICAL: You MUST calibrate confidence honestly for dysarthric speech.
 8. Internally work in this order: phonetic sounds -> likely real words -> complete intended utterance.
 9. Keep phonetic_transcription as faithful to the raw sounds as possible, even if the intended meaning is different.
 10. If the phonetics seem clearer than the semantics, keep the phonetics strong and lower confidence rather than forcing a bad English sentence.
+11. Never copy a recent transcript or recent chat phrase unless the current audio independently supports it.
+12. Text-only context is a weak tie-breaker, not evidence.
 </instructions>`;
 
 const TRANSCRIPTION_SCHEMA = {
@@ -364,8 +366,8 @@ async function getAudioSamples(userId) {
 
 function buildRollingContext(recentTranscriptions) {
   if (!recentTranscriptions || recentTranscriptions.length === 0) return '';
-  const items = recentTranscriptions.map(t => `- "${t}"`).join('\n');
-  return `\n<recent_context>\nRecent confirmed transcriptions from this speaker (use for continuity):\n${items}\n</recent_context>`;
+  const items = recentTranscriptions.slice(-3).map(t => `- "${t}"`).join('\n');
+  return `\n<recent_context>\nWeak continuity hints only. These are recent confirmed transcriptions from this speaker. Use them only as a last-resort tie-breaker when the new audio already points in the same direction. Do NOT copy them into the answer just because they are recent.\n${items}\n</recent_context>`;
 }
 
 // ── Helper: fetch recent chat topics for transcription context ──
@@ -381,10 +383,10 @@ async function getRecentChatContext(userId) {
   const recentMessages = sessions
     .flatMap(s => s.messages || [])
     .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-    .slice(0, 20);
+    .slice(0, 8);
   if (recentMessages.length === 0) return '';
   const items = recentMessages.map(m => `- [${m.role}] ${m.text}`).join('\n');
-  return `\n<recent_chat_context>\nRecent AI chat conversations with this speaker. Use these topics as contextual clues for what they might be saying now:\n${items}\n</recent_chat_context>`;
+  return `\n<recent_chat_context>\nWeak topical clues only from recent AI chat. Use these only if the current audio already supports the same topic. Never reuse a phrase from this section without acoustic evidence.\n${items}\n</recent_chat_context>`;
 }
 
 // ── Helper: Retry with exponential backoff ──

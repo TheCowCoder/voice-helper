@@ -107,7 +107,7 @@ const App: React.FC = () => {
       updateStep('stage1', 'active');
       const base64Audio = await blobToBase64(blob);
       lastAudioRef.current = { base64: base64Audio, mimeType: blob.type };
-      const recent = localStore.getRecentTranscriptions();
+      const recent = transcriptionMode === 'deep' ? localStore.getRecentTranscriptions() : [];
       const newDebugEntries: any[] = [];
 
       // Stage 1: Acoustic transcription

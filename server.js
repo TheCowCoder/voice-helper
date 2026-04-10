@@ -152,6 +152,29 @@ const CHAT_SCHEMA = {
   required: ['reply_text', 'emotion_detected']
 };
 
+const BASE_CALIBRATION_PHRASES = [
+  'I want water',
+  'I am hungry',
+  'I need help',
+  'Turn on the TV',
+  'Call Rupal',
+  'I want to go outside',
+  'What time is it',
+  'I feel good today',
+  'My head hurts',
+  'Thank you',
+  'How is the tennis match',
+  'What is for dinner',
+  'I want to talk to Ian',
+  'Tell me about the weather',
+  'I need my medicine',
+  'મને પાણી જોઈએ છે',
+  'મને ભૂખ લાગી છે',
+  'હું ઠીક છું',
+  'આવો',
+  'શું થયું?',
+];
+
 // ── Who-I-Am Memory Tool Declarations ──
 
 const WHO_I_AM_TOOLS = [
@@ -1222,6 +1245,7 @@ app.post('/api/generate-phrases', async (req, res) => {
 ${whoIAm ? `<who_i_am>\n${whoIAm}\n</who_i_am>` : ''}
 <round>${round || 2}</round>
 <total_completed>${completedPhraseIds.length}</total_completed>
+  <base_round_phrases>\n${BASE_CALIBRATION_PHRASES.join('\n')}\n</base_round_phrases>
 ${hardPhrases.length > 0 ? `<hard_phrases_needs_practice>\n${[...new Set(hardPhrases)].slice(0, 15).join('\n')}\n</hard_phrases_needs_practice>` : ''}
 ${easyPhrases.length > 0 ? `<easy_phrases_mastered>\n${[...new Set(easyPhrases)].slice(0, 10).join('\n')}\n</easy_phrases_mastered>` : ''}
 </context>
@@ -1234,6 +1258,8 @@ Rules:
 - Phrases should be practical daily speech: needs, greetings, family names, interests
 - Personalize based on their profile (family members, interests, daily needs)
 - Progressively harder: round 2 = short sentences, round 3+ = longer/more complex
+- Only round 1 uses the base hardcoded phrases. For round 2 and beyond, do NOT return the base round phrases verbatim.
+- Include at least 4 phrases that naturally use family member names when known.
 - Keep phrases natural — things they'd actually say at home
 - No duplicates
 

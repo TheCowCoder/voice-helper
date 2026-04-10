@@ -64,9 +64,9 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   const [roundComplete, setRoundComplete] = useState(false);
   const { isRecording, startRecording, stopRecording } = useAudioRecorder();
 
-  const round = Math.floor(totalCompleted / ROUND_SIZE);
+  const currentRoundIndex = Math.floor(totalCompleted / ROUND_SIZE);
   const roundProgress = roundIndex; // phrases done in this sitting
-  const roundLabel = getRoundLabel(round);
+  const roundLabel = getRoundLabel(currentRoundIndex);
   const phrase = activePhrases[roundIndex] || PHRASES[0];
   const isDeepMode = transcriptionMode === 'deep';
 
@@ -79,10 +79,10 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       setRoundIndex(0);
 
       // Round 2+ (index >= 1): generate AI phrases
-      const currentRound = Math.floor(completed / ROUND_SIZE);
-      if (currentRound >= 1) {
+      const nextRoundIndex = Math.floor(completed / ROUND_SIZE);
+      if (nextRoundIndex >= 1) {
         try {
-          const aiPhrases = await geminiService.generatePhrases(userId, currentRound + 1);
+          const aiPhrases = await geminiService.generatePhrases(userId, nextRoundIndex + 1);
           if (aiPhrases && aiPhrases.length > 0) {
             setActivePhrases(aiPhrases);
           }
@@ -242,14 +242,15 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   }
 
   if (roundComplete) {
-    const nextRound = round + 1;
-    const nextLabel = getRoundLabel(nextRound);
+    const completedRounds = Math.max(currentRoundIndex, 1);
+    const nextRoundIndex = currentRoundIndex;
+    const nextLabel = getRoundLabel(nextRoundIndex);
     return (
       <div className="flex flex-col items-center justify-center h-full gap-6 p-8">
         <div className="text-6xl">🎉</div>
         <h2 className="text-3xl font-bold text-slate-800">Round Complete!</h2>
         <p className="text-xl text-slate-500 text-center max-w-md">
-          You&apos;ve completed {totalCompleted} total phrases across {round + 1} round{round > 0 ? 's' : ''}.
+          You&apos;ve completed {totalCompleted} total phrases across {completedRounds} round{completedRounds > 1 ? 's' : ''}.
           The app is getting better at understanding you!
         </p>
         <div className="flex gap-4">
@@ -258,10 +259,10 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
               setRoundIndex(0);
               setRoundComplete(false);
               // Fetch new AI phrases for next round
-              if (nextRound >= 1) {
+              if (nextRoundIndex >= 1) {
                 try {
                   setLoading(true);
-                  const aiPhrases = await geminiService.generatePhrases(userId, nextRound + 1);
+                  const aiPhrases = await geminiService.generatePhrases(userId, nextRoundIndex + 1);
                   if (aiPhrases && aiPhrases.length > 0) setActivePhrases(aiPhrases);
                 } catch (err) {
                   console.error('Failed to generate AI phrases for next round:', err);
@@ -272,7 +273,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
             }}
             className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-xl font-bold rounded-2xl transition-colors"
           >
-            Start Round {nextRound + 1}: {nextLabel.title}
+            Start Round {nextRoundIndex + 1}: {nextLabel.title}
           </button>
           <button
             onClick={onClose}
@@ -291,7 +292,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       <div className="shrink-0 flex items-center justify-between">
         <div>
           <h2 className="text-3xl sm:text-4xl font-bold text-slate-800">Training</h2>
-          <p className="text-lg sm:text-xl text-slate-400 font-bold">Round {round + 1}: {roundLabel.title}</p>
+          <p className="text-lg sm:text-xl text-slate-400 font-bold">Round {currentRoundIndex + 1}: {roundLabel.title}</p>
         </div>
         <button onClick={onClose} className="text-slate-500 hover:text-slate-700 text-2xl sm:text-3xl font-bold px-3">
           ✕ Close

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Mic, Square, Check, RotateCcw, SkipForward, Loader2 } from 'lucide-react';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { geminiService } from '../services/geminiService';
@@ -51,6 +51,7 @@ interface CalibrationViewProps {
 
 export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClose, transcriptionMode }) => {
   const [loading, setLoading] = useState(true);
+  const [loadingGeneratedPhrases, setLoadingGeneratedPhrases] = useState(false);
   const [totalCompleted, setTotalCompleted] = useState(0);
   const [completedIds, setCompletedIds] = useState<Set<number>>(new Set());
   const [roundIndex, setRoundIndex] = useState(0); // index within current round (0-19)
@@ -63,6 +64,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   const [isProcessing, setIsProcessing] = useState(false);
   const [roundComplete, setRoundComplete] = useState(false);
   const { isRecording, startRecording, stopRecording } = useAudioRecorder();
+  const lastLoadedRoundRef = useRef<number | null>(null);
 
   const currentRoundIndex = Math.floor(totalCompleted / ROUND_SIZE);
   const roundProgress = roundIndex; // phrases done in this sitting
@@ -77,26 +79,51 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       setTotalCompleted(completed);
       setCompletedIds(new Set(progress.completedPhraseIds || []));
       setRoundIndex(0);
-
-      // Round 2+ (index >= 1): generate AI phrases
-      const nextRoundIndex = Math.floor(completed / ROUND_SIZE);
-      if (nextRoundIndex >= 1) {
-        try {
-          const aiPhrases = await geminiService.generatePhrases(userId, nextRoundIndex + 1);
-          if (aiPhrases && aiPhrases.length > 0) {
-            setActivePhrases(aiPhrases);
-          }
-        } catch (err) {
-          console.error('Failed to generate AI phrases, using defaults:', err);
-        }
-      }
-
       setLoading(false);
     }).catch(err => {
       console.error('Failed to load training progress:', err);
       setLoading(false);
     });
   }, [userId]);
+
+  useEffect(() => {
+    if (loading) return;
+
+    let cancelled = false;
+
+    const loadPhrasesForRound = async () => {
+      if (currentRoundIndex === 0) {
+        lastLoadedRoundRef.current = 0;
+        setActivePhrases(PHRASES);
+        return;
+      }
+
+      if (lastLoadedRoundRef.current === currentRoundIndex) {
+        return;
+      }
+
+      setLoadingGeneratedPhrases(true);
+      try {
+        const aiPhrases = await geminiService.generatePhrases(userId, currentRoundIndex + 1);
+        if (!cancelled && aiPhrases && aiPhrases.length > 0) {
+          setActivePhrases(aiPhrases);
+          lastLoadedRoundRef.current = currentRoundIndex;
+        }
+      } catch (err) {
+        console.error('Failed to generate AI phrases for current round:', err);
+      } finally {
+        if (!cancelled) {
+          setLoadingGeneratedPhrases(false);
+        }
+      }
+    };
+
+    loadPhrasesForRound();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, currentRoundIndex, userId]);
 
   const initSteps = useCallback(() => {
     const nextSteps: TranscriptionStep[] = [
@@ -255,25 +282,14 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         </p>
         <div className="flex gap-4">
           <button
-            onClick={async () => {
+            onClick={() => {
               setRoundIndex(0);
               setRoundComplete(false);
-              // Fetch new AI phrases for next round
-              if (nextRoundIndex >= 1) {
-                try {
-                  setLoading(true);
-                  const aiPhrases = await geminiService.generatePhrases(userId, nextRoundIndex + 1);
-                  if (aiPhrases && aiPhrases.length > 0) setActivePhrases(aiPhrases);
-                } catch (err) {
-                  console.error('Failed to generate AI phrases for next round:', err);
-                } finally {
-                  setLoading(false);
-                }
-              }
             }}
-            className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-xl font-bold rounded-2xl transition-colors"
+            disabled={loadingGeneratedPhrases}
+            className="px-8 py-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xl font-bold rounded-2xl transition-colors"
           >
-            Start Round {nextRoundIndex + 1}: {nextLabel.title}
+            {loadingGeneratedPhrases ? 'Preparing next round...' : `Start Round ${nextRoundIndex + 1}: ${nextLabel.title}`}
           </button>
           <button
             onClick={onClose}

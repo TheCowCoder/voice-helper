@@ -91,6 +91,7 @@ export class GeminiService {
       isError: false,
       structured,
       stage2Used: true,
+      _debug: data._debug,
     };
   }
 

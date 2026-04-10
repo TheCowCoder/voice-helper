@@ -264,12 +264,11 @@ async function getCorrectionExamples(userId, limit = 10) {
 
 // ── Helper: fetch audio samples for few-shot ──
 
-async function getAudioSamples(userId, limit = 3) {
+async function getAudioSamples(userId) {
   if (!db) return [];
   const samples = await db.collection('audioSamples')
     .find({ userId: new ObjectId(userId) })
     .sort({ createdAt: -1 })
-    .limit(limit)
     .toArray();
   return samples;
 }
@@ -304,21 +303,24 @@ async function withRetry(fn, { maxRetries = Infinity, baseDelay = 1000, maxDelay
 
 async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions) {
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
-  const audioSamples = userId ? await getAudioSamples(userId, 3) : [];
+  const audioSamples = userId ? await getAudioSamples(userId) : [];
   const rollingContext = buildRollingContext(recentTranscriptions);
 
   // Build few-shot audio reference parts
   const fewShotParts = [];
   for (const sample of audioSamples) {
+    const heardAttr = sample.heard ? ` heard="${sample.heard}"` : '';
     fewShotParts.push(
-      { text: `<reference_audio transcript="${sample.transcript}">` },
+      { text: `<reference_audio transcript="${sample.transcript}"${heardAttr}>` },
       { inlineData: { mimeType: sample.mimeType || 'audio/webm', data: sample.base64Audio } },
       { text: `</reference_audio>` }
     );
   }
   const fewShotIntro = audioSamples.length > 0
-    ? `\n<audio_references>\nThe following are reference audio samples from this speaker with their verified transcripts. Use these to learn the speaker's voice patterns and pronunciation.\n</audio_references>\n`
+    ? `\n<audio_references count="${audioSamples.length}">\nThe following are reference audio samples from this speaker with their verified transcripts. The "heard" attribute shows what was initially guessed — the "transcript" attribute is the confirmed correct text. Use these to learn the speaker's voice patterns, pronunciation habits, and common misrecognitions.\n</audio_references>\n`
     : '';
+
+  console.log(`Stage 1 — ${audioSamples.length} audio refs, mimeType=${mimeType || 'unknown'}`);
 
   const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}
 
@@ -349,12 +351,31 @@ Output structured JSON following the schema exactly.
   const stage1Text = typeof stage1Response.text === 'function'
     ? await stage1Response.text()
     : stage1Response.text;
-  return JSON.parse(stage1Text);
+  const result = JSON.parse(stage1Text);
+
+  // Build debug info (text parts only, audio data replaced with placeholder)
+  const debugAudioRefs = audioSamples.map(s => ({
+    transcript: s.transcript,
+    heard: s.heard || null,
+    mimeType: s.mimeType,
+    audioSizeKB: Math.round((s.base64Audio?.length || 0) * 0.75 / 1024),
+  }));
+
+  return {
+    result,
+    debug: {
+      systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
+      dynamicPrompt,
+      audioReferences: debugAudioRefs,
+      audioRefCount: audioSamples.length,
+      rawResponse: stage1Text,
+    }
+  };
 }
 
 async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions) {
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
-  const audioSamples = userId ? await getAudioSamples(userId, 3) : [];
+  const audioSamples = userId ? await getAudioSamples(userId) : [];
   const rollingContext = buildRollingContext(recentTranscriptions);
 
   console.log(`Stage 2 running — Stage 1 confidence=${stage1.confidence}, ${audioSamples.length} audio refs`);
@@ -362,8 +383,9 @@ async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId,
   // Build few-shot audio reference parts
   const fewShotParts = [];
   for (const sample of audioSamples) {
+    const heardAttr = sample.heard ? ` heard="${sample.heard}"` : '';
     fewShotParts.push(
-      { text: `<reference_audio transcript="${sample.transcript}">` },
+      { text: `<reference_audio transcript="${sample.transcript}"${heardAttr}>` },
       { inlineData: { mimeType: sample.mimeType || 'audio/webm', data: sample.base64Audio } },
       { text: `</reference_audio>` }
     );
@@ -414,13 +436,31 @@ Produce an improved structured JSON interpretation.
   const stage2Text = typeof stage2Response.text === 'function'
     ? await stage2Response.text()
     : stage2Response.text;
-  return JSON.parse(stage2Text);
+  const result = JSON.parse(stage2Text);
+
+  const debugAudioRefs = audioSamples.map(s => ({
+    transcript: s.transcript,
+    heard: s.heard || null,
+    mimeType: s.mimeType,
+    audioSizeKB: Math.round((s.base64Audio?.length || 0) * 0.75 / 1024),
+  }));
+
+  return {
+    result,
+    debug: {
+      systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
+      stage2Prompt,
+      audioReferences: debugAudioRefs,
+      audioRefCount: audioSamples.length,
+      rawResponse: stage2Text,
+    }
+  };
 }
 
 // Combined pipeline (used by chat endpoint)
 async function runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions) {
-  const stage1 = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
-  const stage2 = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions);
+  const { result: stage1 } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
+  const { result: stage2 } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions);
   return { ...stage2, stage2Used: true };
 }
 
@@ -437,8 +477,8 @@ app.post('/api/transcribe/stage1', async (req, res) => {
     if (mimeType && mimeType.includes(';')) mimeType = mimeType.split(';')[0];
 
     console.log(`/api/transcribe/stage1 — mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
-    const result = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
-    res.json(result);
+    const { result, debug } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
+    res.json({ ...result, _debug: debug });
   } catch (error) {
     console.error("Stage 1 API Error:", error?.message || error);
     res.status(500).json({ error: error?.message || "Stage 1 failed" });
@@ -459,8 +499,8 @@ app.post('/api/transcribe/stage2', async (req, res) => {
     if (mimeType && mimeType.includes(';')) mimeType = mimeType.split(';')[0];
 
     console.log(`/api/transcribe/stage2 — refining "${stage1Result.primary_transcription}"`);
-    const result = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1Result, userId, recentTranscriptions);
-    res.json({ ...result, stage2Used: true });
+    const { result, debug } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1Result, userId, recentTranscriptions);
+    res.json({ ...result, stage2Used: true, _debug: debug });
   } catch (error) {
     console.error("Stage 2 API Error:", error?.message || error);
     res.status(500).json({ error: error?.message || "Stage 2 failed" });
@@ -817,6 +857,8 @@ app.post('/api/calibrate', async (req, res) => {
         base64Audio: audioBase64,
         mimeType: mimeType || 'audio/webm',
         transcript: correct,
+        heard,
+        source: 'calibration',
         createdAt: new Date()
       });
     }
@@ -923,7 +965,7 @@ app.get('/api/corrections/:userId', async (req, res) => {
 
 app.post('/api/audio-sample', async (req, res) => {
   try {
-    const { userId, base64Audio, mimeType, transcript, durationMs } = req.body || {};
+    const { userId, base64Audio, mimeType, transcript, heard, durationMs } = req.body || {};
 
     if (!userId || !base64Audio) {
       return res.status(400).json({ error: "userId and base64Audio are required" });
@@ -938,6 +980,8 @@ app.post('/api/audio-sample', async (req, res) => {
       base64Audio,
       mimeType: mimeType || 'audio/webm',
       transcript: transcript || '',
+      heard: heard || '',
+      source: 'transcribe',
       durationMs: durationMs || null,
       createdAt: new Date()
     });

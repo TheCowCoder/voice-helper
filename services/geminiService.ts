@@ -52,7 +52,7 @@ export class GeminiService {
     mimeType: string,
     userId?: string,
     recentTranscriptions?: string[]
-  ): Promise<StructuredTranscription> {
+  ): Promise<StructuredTranscription & { _debug?: any }> {
     const response = await fetch('/api/transcribe/stage1', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -68,7 +68,7 @@ export class GeminiService {
     stage1Result: StructuredTranscription,
     userId?: string,
     recentTranscriptions?: string[]
-  ): Promise<TranscriptionResult> {
+  ): Promise<TranscriptionResult & { _debug?: any }> {
     const response = await fetch('/api/transcribe/stage2', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -195,6 +195,7 @@ export class GeminiService {
     base64Audio: string;
     mimeType?: string;
     transcript?: string;
+    heard?: string;
     durationMs?: number;
   }): Promise<{ success: boolean }> {
     const response = await fetch('/api/audio-sample', {

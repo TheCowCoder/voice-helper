@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useRef } from 'react';
-import { RotateCcw, Loader2, Volume2 } from 'lucide-react';
+import { RotateCcw, Loader2, Volume2, Bug } from 'lucide-react';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { useAuth } from './hooks/useAuth';
 import { geminiService } from './services/geminiService';
@@ -14,6 +14,7 @@ import { ChatView } from './components/ChatView';
 import { CalibrationView } from './components/CalibrationView';
 import { ProfileView } from './components/ProfileView';
 import { StepBubbles } from './components/StepBubbles';
+import { DebugModal } from './components/DebugModal';
 import { AppState, AppMode, StructuredTranscription, TranscriptionStep } from './types';
 
 const App: React.FC = () => {
@@ -34,6 +35,10 @@ const App: React.FC = () => {
   // Keep original transcription for correction tracking
   const originalTextRef = useRef<string>('');
   const lastAudioRef = useRef<{ base64: string; mimeType: string } | null>(null);
+
+  // Debug modal state
+  const [debugEntries, setDebugEntries] = useState<any[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
 
   // ── Step management helpers ──
   const initSteps = useCallback(() => {
@@ -77,14 +82,27 @@ const App: React.FC = () => {
       const base64Audio = await blobToBase64(blob);
       lastAudioRef.current = { base64: base64Audio, mimeType: blob.type };
       const recent = localStore.getRecentTranscriptions();
+      const newDebugEntries: any[] = [];
 
       // Stage 1: Acoustic transcription
-      const stage1 = await geminiService.transcribeStage1(
+      const stage1Raw = await geminiService.transcribeStage1(
         base64Audio,
         blob.type,
         user?._id,
         recent
       );
+
+      const { _debug: stage1Debug, ...stage1 } = stage1Raw;
+      if (stage1Debug) {
+        newDebugEntries.push({
+          stage: 'Stage 1: Acoustic Transcription',
+          systemInstruction: stage1Debug.systemInstruction,
+          prompt: stage1Debug.dynamicPrompt,
+          audioReferences: stage1Debug.audioReferences,
+          audioRefCount: stage1Debug.audioRefCount,
+          rawResponse: stage1Debug.rawResponse,
+        });
+      }
 
       updateStep('stage1', 'done', `Phonetic: "${stage1.phonetic_transcription}" — ${Math.round(stage1.confidence * 100)}% confidence`);
       updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
@@ -97,6 +115,20 @@ const App: React.FC = () => {
         user?._id,
         recent
       );
+
+      const { _debug: stage2Debug } = result as any;
+      if (stage2Debug) {
+        newDebugEntries.push({
+          stage: 'Stage 2: Semantic Refinement',
+          systemInstruction: stage2Debug.systemInstruction,
+          prompt: stage2Debug.stage2Prompt,
+          audioReferences: stage2Debug.audioReferences,
+          audioRefCount: stage2Debug.audioRefCount,
+          rawResponse: stage2Debug.rawResponse,
+        });
+      }
+
+      setDebugEntries(newDebugEntries);
 
       if (result.structured) {
         setStructured(result.structured);
@@ -147,6 +179,7 @@ const App: React.FC = () => {
         base64Audio: lastAudioRef.current.base64,
         mimeType: lastAudioRef.current.mimeType,
         transcript: transcription,
+        heard: originalTextRef.current || undefined,
       }).catch(console.error);
     }
     setTranscription("");
@@ -269,16 +302,27 @@ const App: React.FC = () => {
 
           {(appState === AppState.REVIEW || appState === AppState.PLAYING) && (
             <div className="w-full flex-1 flex flex-col gap-3 sm:gap-6 min-h-0 animate-in slide-in-from-bottom-10 duration-500">
-              {steps.length > 0 && (
-                <details className="w-full">
-                    <summary className="cursor-pointer text-xl sm:text-2xl text-slate-500 font-bold px-3 py-2 hover:text-slate-700 transition-colors">
-                    Pipeline steps ({steps.filter(s => s.status === 'done').length}/{steps.length} complete)
-                  </summary>
-                  <div className="mt-2">
-                    <StepBubbles steps={steps} />
-                  </div>
-                </details>
-              )}
+              <div className="flex items-center gap-3">
+                {steps.length > 0 && (
+                  <details className="flex-1">
+                      <summary className="cursor-pointer text-xl sm:text-2xl text-slate-500 font-bold px-3 py-2 hover:text-slate-700 transition-colors">
+                      Pipeline steps ({steps.filter(s => s.status === 'done').length}/{steps.length} complete)
+                    </summary>
+                    <div className="mt-2">
+                      <StepBubbles steps={steps} />
+                    </div>
+                  </details>
+                )}
+                {debugEntries.length > 0 && (
+                  <button
+                    onClick={() => setShowDebug(true)}
+                    className="shrink-0 p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 transition-colors"
+                    title="View debug logs"
+                  >
+                    <Bug className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
               <TranscriptionDisplay 
                 text={transcription} 
                 onChange={setTranscription}
@@ -319,6 +363,11 @@ const App: React.FC = () => {
           {appState === AppState.REVIEW && ""}
         </footer>
       </div>
+
+      {/* Debug modal */}
+      {showDebug && (
+        <DebugModal entries={debugEntries} onClose={() => setShowDebug(false)} />
+      )}
     </div>
   );
 };

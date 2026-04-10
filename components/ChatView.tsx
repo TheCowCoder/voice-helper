@@ -88,6 +88,17 @@ export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
         // Clear pipeline steps — transcription is done
         setSteps([]);
 
+        // Save audio sample for learning
+        if (userId) {
+          geminiService.saveAudioSample({
+            userId,
+            base64Audio,
+            mimeType: blob.type,
+            transcript: userText,
+            heard: stage1.primary_transcription,
+          }).catch(console.error);
+        }
+
         // Show user message immediately
         setMessages(prev => [...prev, {
           role: 'user' as const,

@@ -69,7 +69,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   const currentRoundIndex = Math.floor(totalCompleted / ROUND_SIZE);
   const roundProgress = roundIndex; // phrases done in this sitting
   const roundLabel = getRoundLabel(currentRoundIndex);
-  const phrase = activePhrases[roundIndex] || PHRASES[0];
+  const phrase = activePhrases[roundIndex];
   const isDeepMode = transcriptionMode === 'deep';
 
   // Load progress from server on mount
@@ -103,6 +103,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       }
 
       setLoadingGeneratedPhrases(true);
+      setActivePhrases([]);
       try {
         const aiPhrases = await geminiService.generatePhrases(userId, currentRoundIndex + 1);
         if (!cancelled && aiPhrases && aiPhrases.length > 0) {
@@ -332,11 +333,21 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       {/* Prompt card */}
       <div className="flex-1 flex flex-col items-center justify-center gap-6 sm:gap-8 min-h-0 overflow-y-auto">
         <div className="w-full bg-white rounded-3xl shadow-lg border-2 border-slate-100 p-8 sm:p-10 text-center shrink-0">
-          <p className="text-slate-500 text-xl sm:text-2xl mb-4">Please say:</p>
-          <p className="text-4xl sm:text-5xl font-bold text-slate-800 leading-relaxed">&ldquo;{phrase.text}&rdquo;</p>
-          {phrase.translation && (
-            <p className="text-2xl sm:text-3xl text-slate-400 mt-4">({phrase.translation})</p>
-          )}
+          {loadingGeneratedPhrases && currentRoundIndex >= 1 ? (
+            <div className="flex flex-col items-center gap-4 py-6">
+              <Loader2 className="h-12 w-12 animate-spin text-blue-500" />
+              <p className="text-2xl sm:text-3xl font-bold text-slate-700">Generating the next AI practice round...</p>
+              <p className="text-lg sm:text-xl text-slate-400">Saving the phrases so you do not have to generate them twice.</p>
+            </div>
+          ) : phrase ? (
+            <>
+              <p className="text-slate-500 text-xl sm:text-2xl mb-4">Please say:</p>
+              <p className="text-4xl sm:text-5xl font-bold text-slate-800 leading-relaxed">&ldquo;{phrase.text}&rdquo;</p>
+              {phrase.translation && (
+                <p className="text-2xl sm:text-3xl text-slate-400 mt-4">({phrase.translation})</p>
+              )}
+            </>
+          ) : null}
         </div>
 
         {/* 4-step pipeline display */}
@@ -371,7 +382,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         )}
 
         {/* Record button */}
-        {!heard && !isProcessing && (
+        {!heard && !isProcessing && !loadingGeneratedPhrases && phrase && (
           <button
             onClick={handleRecord}
             className={`

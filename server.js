@@ -41,6 +41,7 @@ async function connectMongo() {
     await db.collection('corrections').createIndex({ userId: 1 });
     await db.collection('chatHistory').createIndex({ userId: 1, sessionId: 1 });
     await db.collection('audioSamples').createIndex({ userId: 1 });
+    await db.collection('generatedCalibrationPhrases').createIndex({ userId: 1, round: 1 }, { unique: true });
     console.log('Connected to MongoDB');
   } catch (err) {
     console.warn('MongoDB connection failed — running without persistence:', err.message);
@@ -174,6 +175,64 @@ const BASE_CALIBRATION_PHRASES = [
   'આવો',
   'શું થયું?',
 ];
+
+function normalizeCalibrationPhrase(text = '') {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}'\s-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildFallbackGeneratedPhrases(round) {
+  const mediumRoundPhrases = [
+    { text: 'Please call Rupal after lunch', language: 'english' },
+    { text: 'I want Ian to bring my water bottle', language: 'english' },
+    { text: 'Ask Sonal about dinner tonight', language: 'english' },
+    { text: 'Tell Ellora I am ready to practice', language: 'english' },
+    { text: 'Please help me sit up straighter', language: 'english' },
+    { text: 'I want to walk to the window now', language: 'english' },
+    { text: 'Let us practice the breathing exercise again', language: 'english' },
+    { text: 'My throat feels tight when I speak', language: 'english' },
+    { text: 'I need a slower pace for this exercise', language: 'english' },
+    { text: 'Please repeat that word one more time', language: 'english' },
+    { text: 'I want to talk about the tennis match later', language: 'english' },
+    { text: 'Please bring my medicine after dinner', language: 'english' },
+    { text: 'I am ready for the next speech exercise', language: 'english' },
+    { text: 'Please write the phone number more slowly', language: 'english' },
+    { text: 'I want to call David this afternoon', language: 'english' },
+    { text: 'Forest should come here when he is free', language: 'english' },
+    { text: 'મને રુપાલ સાથે વાત કરવી છે', language: 'gujarati', translation: 'I want to talk with Rupal' },
+    { text: 'આજે મને ધીમે ધીમે પ્રેક્ટિસ કરવી છે', language: 'gujarati', translation: 'Today I want to practice slowly' },
+    { text: 'મને ફરી એક વાર બોલવા દો', language: 'gujarati', translation: 'Let me speak one more time' },
+    { text: 'ઇયાનને અહીં બોલાવો', language: 'gujarati', translation: 'Call Ian here' },
+  ];
+
+  const harderRoundPhrases = [
+    { text: 'Please ask Rupal to bring my medicine after the tennis match ends', language: 'english' },
+    { text: 'I want Ian to write the phone number slowly so I can repeat it clearly', language: 'english' },
+    { text: 'Tell Sonal that I want to practice the longer sentence again before dinner', language: 'english' },
+    { text: 'Ask Ellora whether she can help me with the breathing exercise after lunch', language: 'english' },
+    { text: 'Please remind David that I want to talk after my speech exercises are finished', language: 'english' },
+    { text: 'I need a slower rhythm because the words come out better that way', language: 'english' },
+    { text: 'Let us repeat the same sentence until each word sounds clearer', language: 'english' },
+    { text: 'My voice feels stronger when I sit tall and breathe before speaking', language: 'english' },
+    { text: 'Please help me practice the difficult words one at a time', language: 'english' },
+    { text: 'I want to say the full sentence before moving to the next exercise', language: 'english' },
+    { text: 'After this practice, I want to call Forest and tell him I did well', language: 'english' },
+    { text: 'Please ask Leela if she can listen while I repeat the sentence again', language: 'english' },
+    { text: 'I want to finish this exercise before we talk about dinner tonight', language: 'english' },
+    { text: 'The long sentence is easier when I pause in the middle and start again', language: 'english' },
+    { text: 'Please compare this attempt with the last one and tell me if it was clearer', language: 'english' },
+    { text: 'I am ready for a harder speech exercise with more family names in it', language: 'english' },
+    { text: 'મને લાંબું વાક્ય ધીમે અને સ્પષ્ટ રીતે બોલવાની પ્રેક્ટિસ કરવી છે', language: 'gujarati', translation: 'I want to practice speaking a long sentence slowly and clearly' },
+    { text: 'રૂપાલને કહો કે હું ડિનર પહેલાં ફરી એક વાર પ્રેક્ટિસ કરીશ', language: 'gujarati', translation: 'Tell Rupal that I will practice one more time before dinner' },
+    { text: 'મારી વાણી વધુ સ્પષ્ટ થાય છે જ્યારે હું સીધો બેસું અને શ્વાસ લઉં', language: 'gujarati', translation: 'My speech gets clearer when I sit straight and take a breath' },
+    { text: 'મને આગળની કસરત પહેલાં આ આખું વાક્ય સાચું બોલવું છે', language: 'gujarati', translation: 'I want to say this whole sentence correctly before the next exercise' },
+  ];
+
+  return round >= 3 ? harderRoundPhrases : mediumRoundPhrases;
+}
 
 // ── Who-I-Am Memory Tool Declarations ──
 
@@ -1218,6 +1277,16 @@ app.post('/api/generate-phrases', async (req, res) => {
     if (!userId) return res.status(400).json({ error: "userId is required" });
 
     const ai = getAiClient();
+    const roundNumber = round || 2;
+
+    const cached = await db.collection('generatedCalibrationPhrases').findOne({
+      userId: new ObjectId(userId),
+      round: roundNumber,
+    });
+
+    if (cached?.phrases?.length) {
+      return res.json({ phrases: cached.phrases, cached: true });
+    }
 
     // Gather context: who-i-am, past corrections, past calibration phrases
     const profile = await db.collection('profiles').findOne(
@@ -1243,7 +1312,7 @@ app.post('/api/generate-phrases', async (req, res) => {
 
 <context>
 ${whoIAm ? `<who_i_am>\n${whoIAm}\n</who_i_am>` : ''}
-<round>${round || 2}</round>
+<round>${roundNumber}</round>
 <total_completed>${completedPhraseIds.length}</total_completed>
   <base_round_phrases>\n${BASE_CALIBRATION_PHRASES.join('\n')}\n</base_round_phrases>
 ${hardPhrases.length > 0 ? `<hard_phrases_needs_practice>\n${[...new Set(hardPhrases)].slice(0, 15).join('\n')}\n</hard_phrases_needs_practice>` : ''}
@@ -1265,30 +1334,60 @@ Rules:
 
 Return ONLY the JSON array, no markdown fencing.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: prompt,
-    });
-
-    let phrases;
+    let phrases = [];
     try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: prompt,
+      });
       const text = response.text.replace(/```json?\s*/g, '').replace(/```\s*/g, '').trim();
       phrases = JSON.parse(text);
     } catch (parseErr) {
-      console.error('Failed to parse AI phrases:', parseErr);
-      return res.status(500).json({ error: 'Failed to parse generated phrases' });
+      console.error('Failed to generate or parse AI phrases, using fallback set:', parseErr);
+    }
+
+    const basePhraseSet = new Set(BASE_CALIBRATION_PHRASES.map(normalizeCalibrationPhrase));
+    const seen = new Set();
+
+    const sanitizedPhrases = [];
+    for (const phrase of Array.isArray(phrases) ? phrases : []) {
+      const normalized = normalizeCalibrationPhrase(phrase?.text || '');
+      if (!normalized || seen.has(normalized)) continue;
+      if (roundNumber > 1 && basePhraseSet.has(normalized)) continue;
+      seen.add(normalized);
+      sanitizedPhrases.push(phrase);
+    }
+
+    for (const fallbackPhrase of buildFallbackGeneratedPhrases(roundNumber)) {
+      if (sanitizedPhrases.length >= count) break;
+      const normalized = normalizeCalibrationPhrase(fallbackPhrase.text);
+      if (!normalized || seen.has(normalized) || basePhraseSet.has(normalized)) continue;
+      seen.add(normalized);
+      sanitizedPhrases.push(fallbackPhrase);
     }
 
     // Add IDs starting from 100 (to distinguish from hardcoded)
-    const withIds = phrases.map((p, i) => ({
-      id: 100 + (round || 2) * 100 + i,
+    const withIds = sanitizedPhrases.slice(0, count).map((p, i) => ({
+      id: 100 + roundNumber * 100 + i,
       text: p.text,
       language: p.language || 'english',
       translation: p.translation || undefined,
     }));
 
-    console.log(`Generated ${withIds.length} calibration phrases for round ${round || 2}`);
-    res.json({ phrases: withIds });
+    await db.collection('generatedCalibrationPhrases').updateOne(
+      { userId: new ObjectId(userId), round: roundNumber },
+      {
+        $set: {
+          phrases: withIds,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
+      },
+      { upsert: true }
+    );
+
+    console.log(`Generated ${withIds.length} calibration phrases for round ${roundNumber}`);
+    res.json({ phrases: withIds, cached: false });
   } catch (error) {
     console.error("Generate phrases error:", error?.message || error);
     res.status(500).json({ error: error?.message || "Failed to generate phrases" });

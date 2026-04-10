@@ -256,9 +256,12 @@ async function getCorrectionExamples(userId, limit = 10) {
     .limit(limit)
     .toArray();
   if (corrections.length === 0) return '';
-  const examples = corrections.map(c =>
-    `<example>\n  <heard>${c.heard}</heard>\n  <correct>${c.correct}</correct>\n</example>`
-  ).join('\n');
+  const examples = corrections
+    .filter(c => c.heard !== c.correct)
+    .map(c =>
+      `<example>\n  <heard>${c.heard}</heard>\n  <correct>${c.correct}</correct>\n</example>`
+    ).join('\n');
+  if (!examples) return '';
   return `\n<few_shot_corrections>\nThese are known corrections for this speaker. Use them to improve interpretation.\n${examples}\n</few_shot_corrections>`;
 }
 
@@ -279,6 +282,25 @@ function buildRollingContext(recentTranscriptions) {
   if (!recentTranscriptions || recentTranscriptions.length === 0) return '';
   const items = recentTranscriptions.map(t => `- "${t}"`).join('\n');
   return `\n<recent_context>\nRecent confirmed transcriptions from this speaker (use for continuity):\n${items}\n</recent_context>`;
+}
+
+// ── Helper: fetch recent chat topics for transcription context ──
+
+async function getRecentChatContext(userId) {
+  if (!db || !userId) return '';
+  const sessions = await db.collection('chatHistory')
+    .find({ userId: new ObjectId(userId) })
+    .sort({ 'messages.timestamp': -1 })
+    .limit(3)
+    .toArray();
+  if (sessions.length === 0) return '';
+  const recentMessages = sessions
+    .flatMap(s => s.messages || [])
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, 20);
+  if (recentMessages.length === 0) return '';
+  const items = recentMessages.map(m => `- [${m.role}] ${m.text}`).join('\n');
+  return `\n<recent_chat_context>\nRecent AI chat conversations with this speaker. Use these topics as contextual clues for what they might be saying now:\n${items}\n</recent_chat_context>`;
 }
 
 // ── Helper: Retry with exponential backoff ──
@@ -305,6 +327,7 @@ async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentT
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
   const audioSamples = userId ? await getAudioSamples(userId) : [];
   const rollingContext = buildRollingContext(recentTranscriptions);
+  const chatContext = await getRecentChatContext(userId);
 
   // Build few-shot audio reference parts
   const fewShotParts = [];
@@ -322,7 +345,7 @@ async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentT
 
   console.log(`Stage 1 — ${audioSamples.length} audio refs, mimeType=${mimeType || 'unknown'}`);
 
-  const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}
+  const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}${chatContext}
 
 <task>
 Analyze the audio recording and produce your best interpretation of the speaker's intended meaning.
@@ -375,6 +398,7 @@ Output structured JSON following the schema exactly.
 
 async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions) {
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
+  const chatContext = await getRecentChatContext(userId);
   const audioSamples = userId ? await getAudioSamples(userId) : [];
   const rollingContext = buildRollingContext(recentTranscriptions);
 
@@ -412,7 +436,7 @@ Please re-analyze with deeper reasoning. Consider:
 6. What would make semantic sense as a complete thought?
 
 Produce an improved structured JSON interpretation.
-</stage2_refinement>${correctionExamples}${rollingContext}`;
+</stage2_refinement>${correctionExamples}${rollingContext}${chatContext}`;
 
   const stage2Response = await withRetry(() => ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -623,11 +647,13 @@ ${contextDoc || 'No context document available yet.'}
 </context_document>
 
 <who_i_am>
-This is what you know about ${userName} and their circle. USE the read tools to recall details when relevant.
+This is YOUR memory — your personal knowledge base that defines what you know and remember.
+These are facts YOU have learned about ${userName}, their family, and their world.
+USE the read tools to recall your knowledge when relevant.
 USE the write tools to save new information you learn during conversation.
-Be proactive about remembering — if someone shares something personal, save it.
-When a family member tells you something about ${userName} or about themselves, save it appropriately.
-${whoIAmSummary || '(Empty — you haven\'t learned anything yet. Start by getting to know them!)'}
+Be proactive about remembering — if someone shares something personal, save it to YOUR memory.
+When a family member tells you something, remember it.
+${whoIAmSummary || '(Your memory is empty — you haven\'t learned anything yet. Start by getting to know them!)'}
 </who_i_am>
 
 <easter_egg>

@@ -270,7 +270,7 @@ async function getAudioSamples(userId) {
   if (!db) return [];
   const samples = await db.collection('audioSamples')
     .find({ userId: new ObjectId(userId) })
-    .sort({ createdAt: -1 })
+    .sort({ createdAt: 1 })
     .toArray();
   return samples;
 }
@@ -320,29 +320,74 @@ async function withRetry(fn, { maxRetries = Infinity, baseDelay = 1000, maxDelay
   }
 }
 
-// ── Helper: Two-Stage Transcription Pipeline ──
+// ── Helper: build few-shot audio reference parts with transcription logs ──
 
-async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions) {
-  const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
-  const audioSamples = userId ? await getAudioSamples(userId) : [];
-  const rollingContext = buildRollingContext(recentTranscriptions);
-  const chatContext = await getRecentChatContext(userId);
-
-  // Build few-shot audio reference parts
+function buildFewShotParts(audioSamples) {
   const fewShotParts = [];
   for (const sample of audioSamples) {
     const heardAttr = sample.heard ? ` heard="${sample.heard}"` : '';
+    // Build transcription log section if available
+    let logSection = '';
+    if (sample.transcriptionLog) {
+      const log = sample.transcriptionLog;
+      const logParts = [];
+      if (log.phonetic) logParts.push(`  <phonetic>${log.phonetic}</phonetic>`);
+      if (log.stage1Thinking) logParts.push(`  <stage1_reasoning>${log.stage1Thinking}</stage1_reasoning>`);
+      if (log.stage2Thinking) logParts.push(`  <stage2_reasoning>${log.stage2Thinking}</stage2_reasoning>`);
+      if (log.alternatives && log.alternatives.length > 0) {
+        logParts.push(`  <alternatives>${JSON.stringify(log.alternatives)}</alternatives>`);
+      }
+      if (log.confidence != null) logParts.push(`  <confidence>${log.confidence}</confidence>`);
+      if (logParts.length > 0) {
+        logSection = `\n<transcription_log>\n${logParts.join('\n')}\n</transcription_log>\n`;
+      }
+    }
     fewShotParts.push(
-      { text: `<reference_audio transcript="${sample.transcript}"${heardAttr}>` },
+      { text: `<reference_audio transcript="${sample.transcript}"${heardAttr}>${logSection}` },
       { inlineData: { mimeType: sample.mimeType || 'audio/webm', data: sample.base64Audio } },
       { text: `</reference_audio>` }
     );
   }
+  return fewShotParts;
+}
+
+// ── Helper: Mode-based config ──
+
+function getTranscriptionConfig(mode = 'fast') {
+  if (mode === 'deep') {
+    return {
+      model: 'gemini-3.1-pro-preview',
+      stage1Thinking: 'medium',
+      stage2Thinking: 'high',
+      maxAudioSamples: Infinity, // all
+    };
+  }
+  return {
+    model: 'gemini-3-flash-preview',
+    stage1Thinking: 'low',
+    stage2Thinking: 'medium',
+    maxAudioSamples: 10,
+  };
+}
+
+// ── Helper: Two-Stage Transcription Pipeline ──
+
+async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions, mode = 'fast') {
+  const config = getTranscriptionConfig(mode);
+  const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
+  let audioSamples = userId ? await getAudioSamples(userId) : [];
+  if (config.maxAudioSamples < Infinity) {
+    audioSamples = audioSamples.slice(-config.maxAudioSamples);
+  }
+  const rollingContext = buildRollingContext(recentTranscriptions);
+  const chatContext = await getRecentChatContext(userId);
+
+  const fewShotParts = buildFewShotParts(audioSamples);
   const fewShotIntro = audioSamples.length > 0
-    ? `\n<audio_references count="${audioSamples.length}">\nThe following are reference audio samples from this speaker with their verified transcripts. The "heard" attribute shows what was initially guessed — the "transcript" attribute is the confirmed correct text. Use these to learn the speaker's voice patterns, pronunciation habits, and common misrecognitions.\n</audio_references>\n`
+    ? `\n<audio_references count="${audioSamples.length}">\nThe following are reference audio samples from this speaker, ordered chronologically (oldest first). Each has a verified transcript and may include a <transcription_log> showing the model's previous reasoning.\n\nIMPORTANT — Learn from the logs:\n- Read them in order. Notice how reasoning evolved across samples.\n- Where "heard" differs from "transcript", the initial guess was WRONG — avoid repeating that mistake.\n- Where phonetic patterns recur, build on successful reasoning strategies.\n- Use confidence trends to calibrate your own certainty.\n- The logs are YOUR past thinking — improve upon them each time.\n</audio_references>\n`
     : '';
 
-  console.log(`Stage 1 — ${audioSamples.length} audio refs, mimeType=${mimeType || 'unknown'}`);
+  console.log(`Stage 1 [${mode}] — ${audioSamples.length} audio refs, model=${config.model}, thinking=${config.stage1Thinking}`);
 
   const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}${chatContext}
 
@@ -352,7 +397,7 @@ Output structured JSON following the schema exactly.
 </task>`;
 
   const stage1Response = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: config.model,
     systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
     contents: {
       parts: [
@@ -363,17 +408,27 @@ Output structured JSON following the schema exactly.
     },
     config: {
       temperature: 1,
-      thinkingConfig: { thinkingLevel: 'low' },
+      thinkingConfig: { thinkingLevel: config.stage1Thinking, includeThoughts: true },
       responseMimeType: 'application/json',
       responseSchema: TRANSCRIPTION_SCHEMA,
       tools: [],
     },
   }));
 
+  // Extract thinking summary from response parts
+  let stage1Thinking = '';
+  const parts = stage1Response.candidates?.[0]?.content?.parts || [];
+  for (const part of parts) {
+    if (part.thought && part.text) {
+      stage1Thinking += part.text;
+    }
+  }
+
   const stage1Text = typeof stage1Response.text === 'function'
     ? await stage1Response.text()
     : stage1Response.text;
   const result = JSON.parse(stage1Text);
+  result._thinking = stage1Thinking || undefined;
 
   // Build debug info (text parts only, audio data replaced with placeholder)
   const debugAudioRefs = audioSamples.map(s => ({
@@ -391,34 +446,35 @@ Output structured JSON following the schema exactly.
       audioReferences: debugAudioRefs,
       audioRefCount: audioSamples.length,
       rawResponse: stage1Text,
+      thinking: stage1Thinking || null,
     }
   };
 }
 
-async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions) {
+async function runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions, mode = 'fast') {
+  const config = getTranscriptionConfig(mode);
   const correctionExamples = userId ? await getCorrectionExamples(userId) : '';
   const chatContext = await getRecentChatContext(userId);
-  const audioSamples = userId ? await getAudioSamples(userId) : [];
+  let audioSamples = userId ? await getAudioSamples(userId) : [];
+  if (config.maxAudioSamples < Infinity) {
+    audioSamples = audioSamples.slice(-config.maxAudioSamples);
+  }
   const rollingContext = buildRollingContext(recentTranscriptions);
 
-  console.log(`Stage 2 running — Stage 1 confidence=${stage1.confidence}, ${audioSamples.length} audio refs`);
+  console.log(`Stage 2 [${mode}] — Stage 1 confidence=${stage1.confidence}, ${audioSamples.length} audio refs, model=${config.model}, thinking=${config.stage2Thinking}`);
 
-  // Build few-shot audio reference parts
-  const fewShotParts = [];
-  for (const sample of audioSamples) {
-    const heardAttr = sample.heard ? ` heard="${sample.heard}"` : '';
-    fewShotParts.push(
-      { text: `<reference_audio transcript="${sample.transcript}"${heardAttr}>` },
-      { inlineData: { mimeType: sample.mimeType || 'audio/webm', data: sample.base64Audio } },
-      { text: `</reference_audio>` }
-    );
-  }
+  const fewShotParts = buildFewShotParts(audioSamples);
+  const fewShotIntro2 = audioSamples.length > 0
+    ? `\n<audio_references count="${audioSamples.length}">\nReference audio samples from this speaker (chronological). Each includes verified transcript and past reasoning logs. Study the logs to avoid repeating past mistakes and build on successful reasoning patterns.\n</audio_references>\n`
+    : '';
+
+  const stage1ThinkingContext = stage1._thinking ? `\nStage 1 reasoning: "${stage1._thinking}"` : '';
 
   const stage2Prompt = `<stage2_refinement>
 The initial transcription had confidence=${stage1.confidence}.
 Phonetic: "${stage1.phonetic_transcription}"
 Initial interpretation: "${stage1.primary_transcription}"
-Alternatives considered: ${JSON.stringify(stage1.alternative_interpretations)}
+Alternatives considered: ${JSON.stringify(stage1.alternative_interpretations)}${stage1ThinkingContext}
 
 IMPORTANT: The initial transcription may contain NONSENSE words that are actually
 dysarthric pronunciations of real words. For example:
@@ -435,10 +491,10 @@ Please re-analyze with deeper reasoning. Consider:
 6. What would make semantic sense as a complete thought?
 
 Produce an improved structured JSON interpretation.
-</stage2_refinement>${correctionExamples}${rollingContext}${chatContext}`;
+</stage2_refinement>${correctionExamples}${fewShotIntro2}${rollingContext}${chatContext}`;
 
   const stage2Response = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: config.model,
     systemInstruction: TRANSCRIPTION_SYSTEM_INSTRUCTION,
     contents: {
       parts: [
@@ -449,17 +505,27 @@ Produce an improved structured JSON interpretation.
     },
     config: {
       temperature: 1,
-      thinkingConfig: { thinkingLevel: 'medium' },
+      thinkingConfig: { thinkingLevel: config.stage2Thinking, includeThoughts: true },
       responseMimeType: 'application/json',
       responseSchema: TRANSCRIPTION_SCHEMA,
       tools: [],
     },
   }));
 
+  // Extract thinking summary from response parts
+  let stage2Thinking = '';
+  const parts = stage2Response.candidates?.[0]?.content?.parts || [];
+  for (const part of parts) {
+    if (part.thought && part.text) {
+      stage2Thinking += part.text;
+    }
+  }
+
   const stage2Text = typeof stage2Response.text === 'function'
     ? await stage2Response.text()
     : stage2Response.text;
   const result = JSON.parse(stage2Text);
+  result._thinking = stage2Thinking || undefined;
 
   const debugAudioRefs = audioSamples.map(s => ({
     transcript: s.transcript,
@@ -476,14 +542,15 @@ Produce an improved structured JSON interpretation.
       audioReferences: debugAudioRefs,
       audioRefCount: audioSamples.length,
       rawResponse: stage2Text,
+      thinking: stage2Thinking || null,
     }
   };
 }
 
 // Combined pipeline (used by chat endpoint)
-async function runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions) {
-  const { result: stage1 } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
-  const { result: stage2 } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions);
+async function runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions, mode = 'fast') {
+  const { result: stage1 } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions, mode);
+  const { result: stage2 } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions, mode);
   return { ...stage2, stage2Used: true };
 }
 
@@ -494,13 +561,13 @@ app.post('/api/transcribe/stage1', async (req, res) => {
     if (!API_KEY) return res.status(500).json({ error: "API_KEY not configured" });
 
     const ai = getAiClient();
-    let { base64Audio, mimeType, userId, recentTranscriptions } = req.body || {};
+    let { base64Audio, mimeType, userId, recentTranscriptions, mode } = req.body || {};
 
     if (!base64Audio) return res.status(400).json({ error: "base64Audio is required" });
     if (mimeType && mimeType.includes(';')) mimeType = mimeType.split(';')[0];
 
-    console.log(`/api/transcribe/stage1 — mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
-    const { result, debug } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions);
+    console.log(`/api/transcribe/stage1 [${mode || 'fast'}] — mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
+    const { result, debug } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions, mode);
     res.json({ ...result, _debug: debug });
   } catch (error) {
     console.error("Stage 1 API Error:", error?.message || error);
@@ -515,14 +582,14 @@ app.post('/api/transcribe/stage2', async (req, res) => {
     if (!API_KEY) return res.status(500).json({ error: "API_KEY not configured" });
 
     const ai = getAiClient();
-    let { base64Audio, mimeType, userId, recentTranscriptions, stage1Result } = req.body || {};
+    let { base64Audio, mimeType, userId, recentTranscriptions, stage1Result, mode } = req.body || {};
 
     if (!base64Audio) return res.status(400).json({ error: "base64Audio is required" });
     if (!stage1Result) return res.status(400).json({ error: "stage1Result is required" });
     if (mimeType && mimeType.includes(';')) mimeType = mimeType.split(';')[0];
 
-    console.log(`/api/transcribe/stage2 — refining "${stage1Result.primary_transcription}"`);
-    const { result, debug } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1Result, userId, recentTranscriptions);
+    console.log(`/api/transcribe/stage2 [${mode || 'fast'}] — refining "${stage1Result.primary_transcription}"`);
+    const { result, debug } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1Result, userId, recentTranscriptions, mode);
     res.json({ ...result, stage2Used: true, _debug: debug });
   } catch (error) {
     console.error("Stage 2 API Error:", error?.message || error);
@@ -539,7 +606,7 @@ app.post('/api/transcribe', async (req, res) => {
     }
 
     const ai = getAiClient();
-    let { base64Audio, mimeType, userId, recentTranscriptions } = req.body || {};
+    let { base64Audio, mimeType, userId, recentTranscriptions, mode } = req.body || {};
 
     if (!base64Audio) {
       return res.status(400).json({ error: "base64Audio is required" });
@@ -549,9 +616,9 @@ app.post('/api/transcribe', async (req, res) => {
       mimeType = mimeType.split(';')[0];
     }
 
-    console.log(`/api/transcribe received - mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
+    console.log(`/api/transcribe [${mode || 'fast'}] - mimeType=${mimeType || 'unknown'}, audioSize=${base64Audio.length}`);
 
-    const result = await runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions);
+    const result = await runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions, mode);
     res.json(result);
   } catch (error) {
     console.error("Transcription API Error:", error?.message || error);
@@ -856,7 +923,7 @@ app.post('/api/tts', async (req, res) => {
 
 app.post('/api/calibrate', async (req, res) => {
   try {
-    const { userId, heard, correct, phraseId, audioBase64, mimeType, language } = req.body || {};
+    const { userId, heard, correct, phraseId, audioBase64, mimeType, language, transcriptionLog } = req.body || {};
 
     if (!userId || !heard || !correct) {
       return res.status(400).json({ error: "userId, heard, and correct are required" });
@@ -888,6 +955,7 @@ app.post('/api/calibrate', async (req, res) => {
         transcript: correct,
         heard,
         source: 'calibration',
+        transcriptionLog: transcriptionLog || null,
         createdAt: new Date()
       });
     }
@@ -924,6 +992,91 @@ app.get('/api/training-progress/:userId', async (req, res) => {
   } catch (error) {
     console.error("Training progress error:", error?.message || error);
     res.status(500).json({ error: error?.message || "Failed to fetch training progress" });
+  }
+});
+
+// ── API: Generate calibration phrases (AI-powered, round 2+) ──
+
+app.post('/api/generate-phrases', async (req, res) => {
+  try {
+    if (!API_KEY) return res.status(500).json({ error: "API_KEY not configured" });
+    if (!db) return res.status(503).json({ error: "Database not available" });
+
+    const { userId, round, count = 20 } = req.body || {};
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+
+    const ai = getAiClient();
+
+    // Gather context: who-i-am, past corrections, past calibration phrases
+    const profile = await db.collection('profiles').findOne(
+      { userId: new ObjectId(userId) },
+      { projection: { whoIAm: 1, training: 1 } }
+    );
+    const whoIAm = profile?.whoIAm || '';
+    const completedPhraseIds = profile?.training?.completedPhraseIds || [];
+
+    // Get past calibration data to see what phrases were used & what was hard
+    const pastCalibrations = await db.collection('corrections').find(
+      { userId: new ObjectId(userId), source: 'calibration' }
+    ).sort({ timestamp: -1 }).limit(60).toArray();
+
+    const hardPhrases = pastCalibrations
+      .filter(c => c.heard !== c.correct)
+      .map(c => c.correct);
+    const easyPhrases = pastCalibrations
+      .filter(c => c.heard === c.correct)
+      .map(c => c.correct);
+
+    const prompt = `You are generating calibration phrases for a speech training app used by a post-stroke patient with dysarthric speech.
+
+<context>
+${whoIAm ? `<who_i_am>\n${whoIAm}\n</who_i_am>` : ''}
+<round>${round || 2}</round>
+<total_completed>${completedPhraseIds.length}</total_completed>
+${hardPhrases.length > 0 ? `<hard_phrases_needs_practice>\n${[...new Set(hardPhrases)].slice(0, 15).join('\n')}\n</hard_phrases_needs_practice>` : ''}
+${easyPhrases.length > 0 ? `<easy_phrases_mastered>\n${[...new Set(easyPhrases)].slice(0, 10).join('\n')}\n</easy_phrases_mastered>` : ''}
+</context>
+
+Generate exactly ${count} calibration phrases as a JSON array. Each phrase should be an object with: { "text": string, "language": "english" | "gujarati", "translation"?: string (only for gujarati) }
+
+Rules:
+- Mix of ~5 repeat/harder-variants of phrases they struggled with + ~15 new phrases
+- Include 3-5 Gujarati phrases with translations
+- Phrases should be practical daily speech: needs, greetings, family names, interests
+- Personalize based on their profile (family members, interests, daily needs)
+- Progressively harder: round 2 = short sentences, round 3+ = longer/more complex
+- Keep phrases natural — things they'd actually say at home
+- No duplicates
+
+Return ONLY the JSON array, no markdown fencing.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: prompt,
+    });
+
+    let phrases;
+    try {
+      const text = response.text.replace(/```json?\s*/g, '').replace(/```\s*/g, '').trim();
+      phrases = JSON.parse(text);
+    } catch (parseErr) {
+      console.error('Failed to parse AI phrases:', parseErr);
+      return res.status(500).json({ error: 'Failed to parse generated phrases' });
+    }
+
+    // Add IDs starting from 100 (to distinguish from hardcoded)
+    const withIds = phrases.map((p, i) => ({
+      id: 100 + (round || 2) * 100 + i,
+      text: p.text,
+      language: p.language || 'english',
+      translation: p.translation || undefined,
+    }));
+
+    console.log(`Generated ${withIds.length} calibration phrases for round ${round || 2}`);
+    res.json({ phrases: withIds });
+  } catch (error) {
+    console.error("Generate phrases error:", error?.message || error);
+    res.status(500).json({ error: error?.message || "Failed to generate phrases" });
   }
 });
 
@@ -998,7 +1151,7 @@ app.get('/api/corrections/:userId', async (req, res) => {
 
 app.post('/api/audio-sample', async (req, res) => {
   try {
-    const { userId, base64Audio, mimeType, transcript, heard, durationMs } = req.body || {};
+    const { userId, base64Audio, mimeType, transcript, heard, durationMs, transcriptionLog } = req.body || {};
 
     if (!userId || !base64Audio) {
       return res.status(400).json({ error: "userId and base64Audio are required" });
@@ -1016,6 +1169,7 @@ app.post('/api/audio-sample', async (req, res) => {
       heard: heard || '',
       source: 'transcribe',
       durationMs: durationMs || null,
+      transcriptionLog: transcriptionLog || null,
       createdAt: new Date()
     });
 

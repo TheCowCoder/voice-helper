@@ -1,22 +1,37 @@
 
 
-import { TranscriptionResult, StructuredTranscription, ChatResponse } from "../types";
+import { TranscriptionResult, StructuredTranscription, ChatResponse, TranscriptionMode, CalibrationPhrase } from "../types";
 
 export class GeminiService {
-  
+  private _abortController: AbortController | null = null;
+
   constructor() {}
+
+  /** Create a new AbortController for the current transcription pipeline. Aborts any in-flight request. */
+  createAbortSignal(): AbortSignal {
+    this._abortController?.abort();
+    this._abortController = new AbortController();
+    return this._abortController.signal;
+  }
+
+  /** Abort any in-flight transcription request */
+  abort() {
+    this._abortController?.abort();
+    this._abortController = null;
+  }
 
   async transcribeAudio(
     base64Audio: string,
     mimeType: string,
     userId?: string,
-    recentTranscriptions?: string[]
+    recentTranscriptions?: string[],
+    mode?: TranscriptionMode
   ): Promise<TranscriptionResult> {
     try {
       const response = await fetch('/api/transcribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Audio, mimeType, userId, recentTranscriptions }),
+        body: JSON.stringify({ base64Audio, mimeType, userId, recentTranscriptions, mode }),
       });
 
       if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
@@ -51,12 +66,15 @@ export class GeminiService {
     base64Audio: string,
     mimeType: string,
     userId?: string,
-    recentTranscriptions?: string[]
+    recentTranscriptions?: string[],
+    mode?: TranscriptionMode,
+    signal?: AbortSignal
   ): Promise<StructuredTranscription & { _debug?: any }> {
     const response = await fetch('/api/transcribe/stage1', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base64Audio, mimeType, userId, recentTranscriptions }),
+      body: JSON.stringify({ base64Audio, mimeType, userId, recentTranscriptions, mode }),
+      signal,
     });
     if (!response.ok) throw new Error(`Stage 1 error: ${response.statusText}`);
     return response.json();
@@ -67,12 +85,15 @@ export class GeminiService {
     mimeType: string,
     stage1Result: StructuredTranscription,
     userId?: string,
-    recentTranscriptions?: string[]
+    recentTranscriptions?: string[],
+    mode?: TranscriptionMode,
+    signal?: AbortSignal
   ): Promise<TranscriptionResult & { _debug?: any }> {
     const response = await fetch('/api/transcribe/stage2', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base64Audio, mimeType, stage1Result, userId, recentTranscriptions }),
+      body: JSON.stringify({ base64Audio, mimeType, stage1Result, userId, recentTranscriptions, mode }),
+      signal,
     });
     if (!response.ok) throw new Error(`Stage 2 error: ${response.statusText}`);
     const data = await response.json();
@@ -92,6 +113,7 @@ export class GeminiService {
       structured,
       stage2Used: true,
       _debug: data._debug,
+      _thinking: data._thinking,
     };
   }
 
@@ -159,6 +181,13 @@ export class GeminiService {
     audioBase64?: string;
     mimeType?: string;
     language?: string;
+    transcriptionLog?: {
+      phonetic?: string;
+      stage1Thinking?: string;
+      stage2Thinking?: string;
+      alternatives?: string[];
+      confidence?: number;
+    };
   }): Promise<{ success: boolean }> {
     const response = await fetch('/api/calibrate', {
       method: 'POST',
@@ -173,6 +202,17 @@ export class GeminiService {
     const response = await fetch(`/api/training-progress/${userId}`);
     if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
     return response.json();
+  }
+
+  async generatePhrases(userId: string, round: number, count = 20): Promise<CalibrationPhrase[]> {
+    const response = await fetch('/api/generate-phrases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, round, count }),
+    });
+    if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
+    const data = await response.json();
+    return data.phrases;
   }
 
   async submitCorrection(data: {
@@ -198,6 +238,13 @@ export class GeminiService {
     transcript?: string;
     heard?: string;
     durationMs?: number;
+    transcriptionLog?: {
+      phonetic?: string;
+      stage1Thinking?: string;
+      stage2Thinking?: string;
+      alternatives?: string[];
+      confidence?: number;
+    };
   }): Promise<{ success: boolean }> {
     const response = await fetch('/api/audio-sample', {
       method: 'POST',

@@ -3,7 +3,7 @@ import { Mic, Square, Loader2 } from 'lucide-react';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { geminiService } from '../services/geminiService';
 import { blobToBase64 } from '../utils/audioUtils';
-import { ChatMessage, TranscriptionStep, MemoryAction } from '../types';
+import { ChatMessage, TranscriptionStep, MemoryAction, TranscriptionMode } from '../types';
 import { StepBubbles } from './StepBubbles';
 
 // Color mapping for memory action bubble types
@@ -31,9 +31,10 @@ function getMemoryBubbleType(action: MemoryAction): string {
 
 interface ChatViewProps {
   userId?: string;
+  transcriptionMode?: TranscriptionMode;
 }
 
-export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ userId, transcriptionMode }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [steps, setSteps] = useState<TranscriptionStep[]>([]);
@@ -73,15 +74,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
       updateStep('stage1', 'active');
 
       try {
+        const signal = geminiService.createAbortSignal();
         const base64Audio = await blobToBase64(blob);
 
         // Stage 1: Acoustic transcription
-        const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId);
+        const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId, undefined, transcriptionMode, signal);
         updateStep('stage1', 'done', `"${stage1.primary_transcription}" — ${Math.round(stage1.confidence * 100)}%`);
         updateStep('refine', 'active', 'Deep reasoning refinement...');
 
         // Stage 2: Semantic refinement
-        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId);
+        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId, undefined, transcriptionMode, signal);
         const userText = result.text || '[voice message]';
         updateStep('refine', 'done', `Refined: "${userText}"`);
 
@@ -96,6 +98,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
             mimeType: blob.type,
             transcript: userText,
             heard: stage1.primary_transcription,
+            transcriptionLog: {
+              phonetic: stage1.phonetic_transcription || undefined,
+              stage1Thinking: (stage1 as any)._thinking || undefined,
+              stage2Thinking: (result as any)._thinking || undefined,
+              alternatives: stage1.alternative_interpretations || undefined,
+              confidence: result.structured?.confidence ?? stage1.confidence,
+            },
           }).catch(console.error);
         }
 
@@ -142,6 +151,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ userId }) => {
         setMessages(prev => [...prev, ...newMessages]);
 
       } catch (err) {
+        if ((err as any)?.name === 'AbortError') {
+          console.log('Chat transcription aborted');
+          setSteps([]);
+          setIsProcessing(false);
+          return;
+        }
         console.error("Chat error:", err);
         setSteps([]);
         setMessages(prev => [

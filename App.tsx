@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { RotateCcw, Loader2, Volume2, Bug } from 'lucide-react';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { useAuth } from './hooks/useAuth';
@@ -15,7 +15,7 @@ import { CalibrationView } from './components/CalibrationView';
 import { ProfileView } from './components/ProfileView';
 import { StepBubbles } from './components/StepBubbles';
 import { DebugModal } from './components/DebugModal';
-import { AppState, AppMode, StructuredTranscription, TranscriptionStep } from './types';
+import { AppState, AppMode, StructuredTranscription, TranscriptionStep, TranscriptionMode } from './types';
 
 const App: React.FC = () => {
   const { user, loading: authLoading, login, register, logout } = useAuth();
@@ -23,6 +23,14 @@ const App: React.FC = () => {
   // Mode & view state
   const [mode, setMode] = useState<AppMode>('transcribe');
   const [showProfile, setShowProfile] = useState(false);
+  const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>(
+    () => (localStorage.getItem('transcriptionMode') as TranscriptionMode) || 'fast'
+  );
+
+  const handleTranscriptionModeChange = (m: TranscriptionMode) => {
+    setTranscriptionMode(m);
+    localStorage.setItem('transcriptionMode', m);
+  };
 
   // Transcribe mode state
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
@@ -35,10 +43,23 @@ const App: React.FC = () => {
   // Keep original transcription for correction tracking
   const originalTextRef = useRef<string>('');
   const lastAudioRef = useRef<{ base64: string; mimeType: string } | null>(null);
+  const lastTranscriptionLogRef = useRef<any>(null);
 
   // Debug modal state
   const [debugEntries, setDebugEntries] = useState<any[]>([]);
   const [showDebug, setShowDebug] = useState(false);
+
+  // Pipeline timer
+  const [pipelineElapsed, setPipelineElapsed] = useState(0);
+  const pipelineStartRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (appState === AppState.TRANSCRIBING) {
+      pipelineStartRef.current = Date.now();
+      const id = setInterval(() => setPipelineElapsed(Date.now() - pipelineStartRef.current), 100);
+      return () => clearInterval(id);
+    }
+  }, [appState]);
 
   // ── Step management helpers ──
   const initSteps = useCallback(() => {
@@ -78,6 +99,7 @@ const App: React.FC = () => {
 
   const processAudio = async (blob: Blob) => {
     try {
+      const signal = geminiService.createAbortSignal();
       updateStep('stage1', 'active');
       const base64Audio = await blobToBase64(blob);
       lastAudioRef.current = { base64: base64Audio, mimeType: blob.type };
@@ -89,7 +111,9 @@ const App: React.FC = () => {
         base64Audio,
         blob.type,
         user?._id,
-        recent
+        recent,
+        transcriptionMode,
+        signal
       );
 
       const { _debug: stage1Debug, ...stage1 } = stage1Raw;
@@ -101,6 +125,7 @@ const App: React.FC = () => {
           audioReferences: stage1Debug.audioReferences,
           audioRefCount: stage1Debug.audioRefCount,
           rawResponse: stage1Debug.rawResponse,
+          thinking: stage1Debug.thinking,
         });
       }
 
@@ -113,7 +138,9 @@ const App: React.FC = () => {
         blob.type,
         stage1,
         user?._id,
-        recent
+        recent,
+        transcriptionMode,
+        signal
       );
 
       const { _debug: stage2Debug } = result as any;
@@ -125,10 +152,20 @@ const App: React.FC = () => {
           audioReferences: stage2Debug.audioReferences,
           audioRefCount: stage2Debug.audioRefCount,
           rawResponse: stage2Debug.rawResponse,
+          thinking: stage2Debug.thinking,
         });
       }
 
       setDebugEntries(newDebugEntries);
+
+      // Build transcription log for storage
+      lastTranscriptionLogRef.current = {
+        phonetic: stage1.phonetic_transcription || undefined,
+        stage1Thinking: (stage1 as any)._thinking || undefined,
+        stage2Thinking: (result.structured as any)?._thinking || (result as any)._thinking || undefined,
+        alternatives: stage1.alternative_interpretations || undefined,
+        confidence: result.structured?.confidence ?? stage1.confidence,
+      };
 
       if (result.structured) {
         setStructured(result.structured);
@@ -142,6 +179,10 @@ const App: React.FC = () => {
       localStore.addRecentTranscription(result.text);
       setAppState(AppState.REVIEW);
     } catch (error) {
+      if ((error as any)?.name === 'AbortError') {
+        console.log('Transcription aborted');
+        return;
+      }
       console.error(error);
       updateStep('stage1', 'error', 'Failed');
       setTranscription("Error transcribing. Please check your connection.");
@@ -163,6 +204,9 @@ const App: React.FC = () => {
   };
 
   const handleReset = () => {
+    // Abort any in-flight transcription requests
+    geminiService.abort();
+
     // Submit correction if text was edited
     if (originalTextRef.current && transcription !== originalTextRef.current && user?._id) {
       geminiService.submitCorrection({
@@ -180,6 +224,7 @@ const App: React.FC = () => {
         mimeType: lastAudioRef.current.mimeType,
         transcript: transcription,
         heard: originalTextRef.current || undefined,
+        transcriptionLog: lastTranscriptionLogRef.current || undefined,
       }).catch(console.error);
     }
     setTranscription("");
@@ -187,8 +232,10 @@ const App: React.FC = () => {
     setSteps([]);
     setAppState(AppState.IDLE);
     setIsPlaying(false);
+    setPipelineElapsed(0);
     originalTextRef.current = '';
     lastAudioRef.current = null;
+    lastTranscriptionLogRef.current = null;
   };
 
   const handleWordCorrection = (original: string, corrected: string) => {
@@ -244,12 +291,12 @@ const App: React.FC = () => {
 
       {/* Calibration view */}
       <div className="flex-1 min-h-0" style={{ display: !showProfile && mode === 'calibrate' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <CalibrationView userId={user._id} onClose={() => setMode('transcribe')} />
+        <CalibrationView userId={user._id} onClose={() => setMode('transcribe')} transcriptionMode={transcriptionMode} />
       </div>
 
       {/* Chat view */}
       <div className="flex-1 min-h-0" style={{ display: !showProfile && mode === 'chat' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <ChatView userId={user._id} />
+        <ChatView userId={user._id} transcriptionMode={transcriptionMode} />
       </div>
 
       {/* Transcribe view */}
@@ -258,6 +305,29 @@ const App: React.FC = () => {
           <div className="flex justify-between items-center">
             <h1 className="text-3xl sm:text-4xl font-bold text-slate-800">Voice Helper</h1>
             <div className="flex items-center gap-3 sm:gap-4">
+              {/* Fast / Deep mode toggle */}
+              <div className="flex rounded-full bg-slate-200 p-1">
+                <button
+                  onClick={() => handleTranscriptionModeChange('fast')}
+                  className={`px-4 py-2 rounded-full text-base sm:text-lg font-bold transition-all ${
+                    transcriptionMode === 'fast'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-slate-500'
+                  }`}
+                >
+                  ⚡ Fast
+                </button>
+                <button
+                  onClick={() => handleTranscriptionModeChange('deep')}
+                  className={`px-4 py-2 rounded-full text-base sm:text-lg font-bold transition-all ${
+                    transcriptionMode === 'deep'
+                      ? 'bg-white text-purple-600 shadow-sm'
+                      : 'text-slate-500'
+                  }`}
+                >
+                  🧠 Deep
+                </button>
+              </div>
               {appState !== AppState.IDLE && (
                 <button 
                   onClick={handleReset}
@@ -296,6 +366,9 @@ const App: React.FC = () => {
 
           {appState === AppState.TRANSCRIBING && (
             <div className="flex flex-col items-center gap-6 animate-in fade-in zoom-in duration-300">
+              <span className="font-mono tabular-nums text-4xl sm:text-5xl text-slate-400">
+                {Math.floor(pipelineElapsed / 60000)}:{String(Math.floor(pipelineElapsed / 1000) % 60).padStart(2, '0')}
+              </span>
               <StepBubbles steps={steps} />
             </div>
           )}
@@ -306,7 +379,7 @@ const App: React.FC = () => {
                 {steps.length > 0 && (
                   <details className="flex-1">
                       <summary className="cursor-pointer text-xl sm:text-2xl text-slate-500 font-bold px-3 py-2 hover:text-slate-700 transition-colors">
-                      Pipeline steps ({steps.filter(s => s.status === 'done').length}/{steps.length} complete)
+                      Pipeline steps ({steps.filter(s => s.status === 'done').length}/{steps.length} complete) — {Math.floor(pipelineElapsed / 60000)}:{String(Math.floor(pipelineElapsed / 1000) % 60).padStart(2, '0')}
                     </summary>
                     <div className="mt-2">
                       <StepBubbles steps={steps} />

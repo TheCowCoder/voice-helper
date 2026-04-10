@@ -10,6 +10,8 @@ export enum AppState {
 
 export type AppMode = 'transcribe' | 'chat' | 'calibrate';
 
+export type TranscriptionMode = 'fast' | 'deep';
+
 // ── Transcription types ──
 
 export interface StructuredTranscription {

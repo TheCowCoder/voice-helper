@@ -3,7 +3,7 @@ import { Mic, Square, Check, RotateCcw, SkipForward, Loader2 } from 'lucide-reac
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { geminiService } from '../services/geminiService';
 import { blobToBase64 } from '../utils/audioUtils';
-import { CalibrationPhrase, TranscriptionStep } from '../types';
+import { CalibrationPhrase, TranscriptionStep, TranscriptionMode } from '../types';
 import { StepBubbles } from './StepBubbles';
 
 const PHRASES: CalibrationPhrase[] = [
@@ -46,17 +46,20 @@ function getRoundLabel(round: number): { title: string; subtitle: string } {
 interface CalibrationViewProps {
   userId: string;
   onClose: () => void;
+  transcriptionMode?: TranscriptionMode;
 }
 
-export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClose }) => {
+export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClose, transcriptionMode }) => {
   const [loading, setLoading] = useState(true);
   const [totalCompleted, setTotalCompleted] = useState(0);
   const [completedIds, setCompletedIds] = useState<Set<number>>(new Set());
   const [roundIndex, setRoundIndex] = useState(0); // index within current round (0-19)
+  const [activePhrases, setActivePhrases] = useState<CalibrationPhrase[]>(PHRASES);
   const [heard, setHeard] = useState('');
   const [steps, setSteps] = useState<TranscriptionStep[]>([]);
   const [lastAudioBase64, setLastAudioBase64] = useState('');
   const [lastMimeType, setLastMimeType] = useState('');
+  const [lastTranscriptionLog, setLastTranscriptionLog] = useState<any>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [roundComplete, setRoundComplete] = useState(false);
   const { isRecording, startRecording, stopRecording } = useAudioRecorder();
@@ -64,15 +67,29 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   const round = Math.floor(totalCompleted / ROUND_SIZE);
   const roundProgress = roundIndex; // phrases done in this sitting
   const roundLabel = getRoundLabel(round);
-  const phrase = PHRASES[roundIndex];
+  const phrase = activePhrases[roundIndex] || PHRASES[0];
 
   // Load progress from server on mount
   useEffect(() => {
-    geminiService.getTrainingProgress(userId).then(progress => {
-      setTotalCompleted(progress.phrasesCompleted || 0);
+    geminiService.getTrainingProgress(userId).then(async (progress) => {
+      const completed = progress.phrasesCompleted || 0;
+      setTotalCompleted(completed);
       setCompletedIds(new Set(progress.completedPhraseIds || []));
-      // Start at the beginning of the phrase list for each new round
       setRoundIndex(0);
+
+      // Round 2+ (index >= 1): generate AI phrases
+      const currentRound = Math.floor(completed / ROUND_SIZE);
+      if (currentRound >= 1) {
+        try {
+          const aiPhrases = await geminiService.generatePhrases(userId, currentRound + 1);
+          if (aiPhrases && aiPhrases.length > 0) {
+            setActivePhrases(aiPhrases);
+          }
+        } catch (err) {
+          console.error('Failed to generate AI phrases, using defaults:', err);
+        }
+      }
+
       setLoading(false);
     }).catch(err => {
       console.error('Failed to load training progress:', err);
@@ -106,25 +123,39 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       updateStep('stage1', 'active');
 
       try {
+        const signal = geminiService.createAbortSignal();
         const base64Audio = await blobToBase64(blob);
         setLastAudioBase64(base64Audio);
         setLastMimeType(blob.type);
 
         // Stage 1: Acoustic transcription
-        const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId);
+        const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId, undefined, transcriptionMode, signal);
 
         updateStep('stage1', 'done', `Phonetic: "${stage1.phonetic_transcription}" — ${Math.round(stage1.confidence * 100)}% confidence`);
         updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
 
         // Stage 2: Semantic refinement
-        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId);
+        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId, undefined, transcriptionMode, signal);
 
         updateStep('refine', 'done', result.structured
           ? `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`
           : undefined);
 
         setHeard(result.text);
+        setLastTranscriptionLog({
+          phonetic: stage1.phonetic_transcription || undefined,
+          stage1Thinking: (stage1 as any)._thinking || undefined,
+          stage2Thinking: (result as any)._thinking || undefined,
+          alternatives: stage1.alternative_interpretations || undefined,
+          confidence: result.structured?.confidence ?? stage1.confidence,
+        });
       } catch (err) {
+        if ((err as any)?.name === 'AbortError') {
+          console.log('Calibration transcription aborted');
+          setSteps([]);
+          setIsProcessing(false);
+          return;
+        }
         console.error("Calibration transcription error:", err);
         updateStep('stage1', 'error', 'Failed');
         setHeard('(could not transcribe)');
@@ -134,6 +165,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       setHeard('');
       setSteps([]);
       setLastAudioBase64('');
+      setLastTranscriptionLog(null);
       await startRecording();
       initSteps();
     }
@@ -151,12 +183,13 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         audioBase64: lastAudioBase64,
         mimeType: lastMimeType,
         language: phrase.language,
+        transcriptionLog: lastTranscriptionLog || undefined,
       });
       setCompletedIds(prev => new Set(prev).add(phrase.id));
       setTotalCompleted(prev => prev + 1);
 
       const nextIndex = roundIndex + 1;
-      if (nextIndex >= PHRASES.length) {
+      if (nextIndex >= activePhrases.length) {
         setRoundComplete(true);
       } else {
         setRoundIndex(nextIndex);
@@ -171,7 +204,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
 
   const handleSkip = () => {
     const nextIndex = roundIndex + 1;
-    if (nextIndex >= PHRASES.length) {
+    if (nextIndex >= activePhrases.length) {
       setRoundComplete(true);
     } else {
       setRoundIndex(nextIndex);
@@ -208,7 +241,22 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         </p>
         <div className="flex gap-4">
           <button
-            onClick={() => { setRoundIndex(0); setRoundComplete(false); }}
+            onClick={async () => {
+              setRoundIndex(0);
+              setRoundComplete(false);
+              // Fetch new AI phrases for next round
+              if (nextRound >= 1) {
+                try {
+                  setLoading(true);
+                  const aiPhrases = await geminiService.generatePhrases(userId, nextRound + 1);
+                  if (aiPhrases && aiPhrases.length > 0) setActivePhrases(aiPhrases);
+                } catch (err) {
+                  console.error('Failed to generate AI phrases for next round:', err);
+                } finally {
+                  setLoading(false);
+                }
+              }
+            }}
             className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-xl font-bold rounded-2xl transition-colors"
           >
             Start Round {nextRound + 1}: {nextLabel.title}
@@ -241,12 +289,12 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
       <div className="shrink-0">
         <div className="flex justify-between text-xl sm:text-2xl text-slate-500 mb-3">
           <span>{roundLabel.subtitle}</span>
-          <span className="font-bold">{roundProgress}/{PHRASES.length} this round &middot; {totalCompleted} total</span>
+          <span className="font-bold">{roundProgress}/{activePhrases.length} this round &middot; {totalCompleted} total</span>
         </div>
         <div className="w-full h-4 sm:h-5 bg-slate-200 rounded-full overflow-hidden">
           <div
             className="h-full bg-blue-500 rounded-full transition-all duration-500"
-            style={{ width: `${(roundProgress / PHRASES.length) * 100}%` }}
+            style={{ width: `${(roundProgress / activePhrases.length) * 100}%` }}
           />
         </div>
       </div>

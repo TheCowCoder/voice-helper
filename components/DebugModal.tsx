@@ -8,6 +8,7 @@ interface DebugEntry {
   audioReferences?: { transcript: string; heard: string | null; mimeType: string; audioSizeKB: number }[];
   audioRefCount?: number;
   rawResponse?: string;
+  thinking?: string;
 }
 
 interface DebugModalProps {
@@ -72,6 +73,17 @@ export const DebugModal: React.FC<DebugModalProps> = ({ entries, onClose }) => {
                   </summary>
                   <pre className="mt-2 bg-blue-50 rounded-xl p-4 text-xs text-slate-700 overflow-x-auto whitespace-pre-wrap max-h-60 overflow-y-auto font-mono">
                     {entry.prompt}
+                  </pre>
+                </details>
+              )}
+
+              {entry.thinking && (
+                <details open>
+                  <summary className="cursor-pointer text-sm font-bold text-purple-600 hover:text-purple-800">
+                    🧠 Thinking / Reasoning
+                  </summary>
+                  <pre className="mt-2 bg-purple-50 rounded-xl p-4 text-xs text-slate-700 overflow-x-auto whitespace-pre-wrap max-h-60 overflow-y-auto font-mono">
+                    {entry.thinking}
                   </pre>
                 </details>
               )}

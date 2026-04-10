@@ -4,7 +4,7 @@ import { RotateCcw, Loader2, Volume2, Bug } from 'lucide-react';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { useAuth } from './hooks/useAuth';
 import { geminiService } from './services/geminiService';
-import { playAudioFromBase64, blobToBase64 } from './utils/audioUtils';
+import { playAudioFromBase64, blobToBase64, stopAudioPlayback } from './utils/audioUtils';
 import { localStore } from './utils/localStorage';
 import { RecordButton } from './components/RecordButton';
 import { TranscriptionDisplay } from './components/TranscriptionDisplay';
@@ -63,12 +63,15 @@ const App: React.FC = () => {
 
   // ── Step management helpers ──
   const initSteps = useCallback(() => {
-    setSteps([
+    const nextSteps: TranscriptionStep[] = [
       { id: 'preprocess', label: 'Audio Preprocessing', status: 'pending', detail: 'Gain boost + dynamic compression via Web Audio' },
-      { id: 'stage1', label: 'Stage 1: Acoustic Transcription', status: 'pending', detail: 'Gemini 3 Flash — structured JSON, thinkingLevel: low' },
-      { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' },
-    ]);
-  }, []);
+      { id: 'stage1', label: transcriptionMode === 'deep' ? 'Stage 1: Acoustic Transcription' : 'Fast Transcription', status: 'pending', detail: transcriptionMode === 'deep' ? 'Gemini 3.1 — strong phonetic first pass' : 'Gemini 3.1 single-pass phonetic + meaning decode' },
+    ];
+    if (transcriptionMode === 'deep') {
+      nextSteps.push({ id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' });
+    }
+    setSteps(nextSteps);
+  }, [transcriptionMode]);
 
   const updateStep = useCallback((id: string, status: TranscriptionStep['status'], detail?: string) => {
     setSteps(prev => prev.map(s => s.id === id ? { ...s, status, ...(detail !== undefined ? { detail } : {}) } : s));
@@ -99,6 +102,7 @@ const App: React.FC = () => {
 
   const processAudio = async (blob: Blob) => {
     try {
+      const isDeepMode = transcriptionMode === 'deep';
       const signal = geminiService.createAbortSignal();
       updateStep('stage1', 'active');
       const base64Audio = await blobToBase64(blob);
@@ -130,53 +134,64 @@ const App: React.FC = () => {
       }
 
       updateStep('stage1', 'done', `Phonetic: "${stage1.phonetic_transcription}" — ${Math.round(stage1.confidence * 100)}% confidence`);
-      updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
+      let finalText = stage1.primary_transcription;
+      let finalStructured: StructuredTranscription | undefined = stage1 as StructuredTranscription;
 
-      // Stage 2: Semantic refinement
-      const result = await geminiService.transcribeStage2(
-        base64Audio,
-        blob.type,
-        stage1,
-        user?._id,
-        recent,
-        transcriptionMode,
-        signal
-      );
+      if (isDeepMode) {
+        updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
 
-      const { _debug: stage2Debug } = result as any;
-      if (stage2Debug) {
-        newDebugEntries.push({
-          stage: 'Stage 2: Semantic Refinement',
-          systemInstruction: stage2Debug.systemInstruction,
-          prompt: stage2Debug.stage2Prompt,
-          audioReferences: stage2Debug.audioReferences,
-          audioRefCount: stage2Debug.audioRefCount,
-          rawResponse: stage2Debug.rawResponse,
-          thinking: stage2Debug.thinking,
-        });
+        const result = await geminiService.transcribeStage2(
+          base64Audio,
+          blob.type,
+          stage1,
+          user?._id,
+          recent,
+          transcriptionMode,
+          signal
+        );
+
+        const { _debug: stage2Debug } = result as any;
+        if (stage2Debug) {
+          newDebugEntries.push({
+            stage: 'Stage 2: Semantic Refinement',
+            systemInstruction: stage2Debug.systemInstruction,
+            prompt: stage2Debug.stage2Prompt,
+            audioReferences: stage2Debug.audioReferences,
+            audioRefCount: stage2Debug.audioRefCount,
+            rawResponse: stage2Debug.rawResponse,
+            thinking: stage2Debug.thinking,
+          });
+        }
+
+        finalText = result.text;
+        finalStructured = result.structured;
+        lastTranscriptionLogRef.current = {
+          phonetic: stage1.phonetic_transcription || undefined,
+          stage1Thinking: (stage1 as any)._thinking || undefined,
+          stage2Thinking: (result.structured as any)?._thinking || (result as any)._thinking || undefined,
+          alternatives: stage1.alternative_interpretations || undefined,
+          confidence: result.structured?.confidence ?? stage1.confidence,
+        };
+
+        if (result.structured) {
+          updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`);
+        } else {
+          updateStep('refine', 'done');
+        }
+      } else {
+        lastTranscriptionLogRef.current = {
+          phonetic: stage1.phonetic_transcription || undefined,
+          stage1Thinking: (stage1 as any)._thinking || undefined,
+          alternatives: stage1.alternative_interpretations || undefined,
+          confidence: stage1.confidence,
+        };
       }
 
       setDebugEntries(newDebugEntries);
-
-      // Build transcription log for storage
-      lastTranscriptionLogRef.current = {
-        phonetic: stage1.phonetic_transcription || undefined,
-        stage1Thinking: (stage1 as any)._thinking || undefined,
-        stage2Thinking: (result.structured as any)?._thinking || (result as any)._thinking || undefined,
-        alternatives: stage1.alternative_interpretations || undefined,
-        confidence: result.structured?.confidence ?? stage1.confidence,
-      };
-
-      if (result.structured) {
-        setStructured(result.structured);
-        updateStep('refine', 'done', `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`);
-      } else {
-        updateStep('refine', 'done');
-      }
-
-      setTranscription(result.text);
-      originalTextRef.current = result.text;
-      localStore.addRecentTranscription(result.text);
+      setStructured(finalStructured);
+      setTranscription(finalText);
+      originalTextRef.current = finalText;
+      localStore.addRecentTranscription(finalText);
       setAppState(AppState.REVIEW);
     } catch (error) {
       if ((error as any)?.name === 'AbortError') {
@@ -193,6 +208,9 @@ const App: React.FC = () => {
   const handlePlay = async () => {
     if (!transcription) return;
     try {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
       setIsPlaying(true);
       const audioData = await geminiService.generateSpeech(transcription);
       await playAudioFromBase64(audioData);
@@ -206,6 +224,7 @@ const App: React.FC = () => {
   const handleReset = () => {
     // Abort any in-flight transcription requests
     geminiService.abort();
+    stopAudioPlayback();
 
     // Submit correction if text was edited
     if (originalTextRef.current && transcription !== originalTextRef.current && user?._id) {
@@ -238,13 +257,23 @@ const App: React.FC = () => {
     lastTranscriptionLogRef.current = null;
   };
 
-  const handleWordCorrection = (original: string, corrected: string) => {
-    // Replace the word in the transcription text
+  const handleWordCorrection = (original: string, corrected: string, wordIndex?: number) => {
     setTranscription(prev => {
-      const words = prev.split(/(\s+)/);
-      const idx = words.findIndex(w => w === original);
-      if (idx !== -1) words[idx] = corrected;
-      return words.join('');
+      const parts = prev.split(/(\s+)/);
+      const wordPartIndexes = parts.reduce<number[]>((indexes, part, index) => {
+        if (part.trim()) indexes.push(index);
+        return indexes;
+      }, []);
+
+      const partIndex = typeof wordIndex === 'number'
+        ? wordPartIndexes[wordIndex]
+        : parts.findIndex(part => part === original);
+
+      if (partIndex !== undefined && partIndex !== -1) {
+        parts[partIndex] = corrected;
+      }
+
+      return parts.join('');
     });
     // Save to server
     if (user?._id) {
@@ -296,7 +325,7 @@ const App: React.FC = () => {
 
       {/* Chat view */}
       <div className="flex-1 min-h-0" style={{ display: !showProfile && mode === 'chat' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <ChatView userId={user._id} transcriptionMode={transcriptionMode} />
+        <ChatView userId={user._id} />
       </div>
 
       {/* Transcribe view */}

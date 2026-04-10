@@ -20,6 +20,27 @@ function decodeBase64(base64: string): Uint8Array {
   return bytes;
 }
 
+let activeAudio: HTMLAudioElement | null = null;
+let activeAudioUrl: string | null = null;
+
+function cleanupActiveAudio() {
+  if (activeAudio) {
+    activeAudio.pause();
+    activeAudio.currentTime = 0;
+    activeAudio.onended = null;
+    activeAudio.onerror = null;
+  }
+  if (activeAudioUrl) {
+    URL.revokeObjectURL(activeAudioUrl);
+  }
+  activeAudio = null;
+  activeAudioUrl = null;
+}
+
+export const stopAudioPlayback = () => {
+  cleanupActiveAudio();
+};
+
 function createWavHeader(dataLength: number): Uint8Array {
   const sampleRate = 24000;
   const header = new ArrayBuffer(44);
@@ -56,19 +77,38 @@ export const playAudioFromBase64 = async (base64Audio: string): Promise<void> =>
 
   return new Promise((resolve, reject) => {
     try {
+      cleanupActiveAudio();
+
       const pcmData = decodeBase64(base64Audio);
       const wavHeader = createWavHeader(pcmData.length);
       const wavBlob = new Blob([wavHeader.buffer as ArrayBuffer, pcmData.buffer as ArrayBuffer], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(wavBlob);
-      const audio = new Audio(audioUrl);
-      
+      const audio = new Audio();
+
+      activeAudio = audio;
+      activeAudioUrl = audioUrl;
+      audio.src = audioUrl;
+      audio.preload = 'auto';
+      audio.currentTime = 0;
       audio.volume = 1.0;
       audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
+        if (activeAudio === audio) {
+          cleanupActiveAudio();
+        }
         resolve();
       };
-      audio.onerror = reject;
-      audio.play().catch(reject);
+      audio.onerror = (event) => {
+        if (activeAudio === audio) {
+          cleanupActiveAudio();
+        }
+        reject(event);
+      };
+      audio.play().catch((error) => {
+        if (activeAudio === audio) {
+          cleanupActiveAudio();
+        }
+        reject(error);
+      });
     } catch (error) {
       reject(error);
     }

@@ -1,6 +1,6 @@
 
 
-import { TranscriptionResult, StructuredTranscription, ChatResponse, TranscriptionMode, CalibrationPhrase } from "../types";
+import { TranscriptionResult, StructuredTranscription, ChatResponse, TranscriptionMode, CalibrationPhrase, AssistantMode } from "../types";
 
 export class GeminiService {
   private _abortController: AbortController | null = null;
@@ -122,12 +122,13 @@ export class GeminiService {
     mimeType: string,
     userId?: string,
     chatHistory?: { role: string; text: string }[],
-    sessionId?: string
+    sessionId?: string,
+    assistantMode: AssistantMode = 'personal'
   ): Promise<ChatResponse> {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base64Audio, mimeType, userId, chatHistory, sessionId }),
+      body: JSON.stringify({ base64Audio, mimeType, userId, chatHistory, sessionId, assistantMode }),
     });
 
     if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
@@ -138,12 +139,13 @@ export class GeminiService {
     transcriptionText: string,
     userId?: string,
     chatHistory?: { role: string; text: string }[],
-    sessionId?: string
+    sessionId?: string,
+    assistantMode: AssistantMode = 'personal'
   ): Promise<ChatResponse> {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcriptionText, userId, chatHistory, sessionId }),
+      body: JSON.stringify({ transcriptionText, userId, chatHistory, sessionId, assistantMode }),
     });
 
     if (!response.ok) throw new Error(`Server error: ${response.statusText}`);

@@ -10,7 +10,7 @@ interface ModeSelectorProps {
 
 const modes: { key: AppMode; label: string; icon: React.ReactNode }[] = [
   { key: 'transcribe', label: 'Transcribe', icon: <Mic className="w-8 h-8 sm:w-9 sm:h-9" /> },
-  { key: 'chat', label: 'Chat AI', icon: <MessageCircle className="w-8 h-8 sm:w-9 sm:h-9" /> },
+  { key: 'chat', label: 'Personal AI', icon: <MessageCircle className="w-8 h-8 sm:w-9 sm:h-9" /> },
   { key: 'calibrate', label: 'Train', icon: <Settings2 className="w-8 h-8 sm:w-9 sm:h-9" /> },
 ];
 

@@ -97,6 +97,9 @@ CRITICAL: You MUST calibrate confidence honestly for dysarthric speech.
 5. For short phrases (2-5 words), rely heavily on context and common phrases.
 6. ALWAYS generate at least 3 alternative interpretations, even if you feel confident.
 7. Think about what REAL phrase the speaker likely intended, not just what the audio sounds like.
+8. Internally work in this order: phonetic sounds -> likely real words -> complete intended utterance.
+9. Keep phonetic_transcription as faithful to the raw sounds as possible, even if the intended meaning is different.
+10. If the phonetics seem clearer than the semantics, keep the phonetics strong and lower confidence rather than forcing a bad English sentence.
 </instructions>`;
 
 const TRANSCRIPTION_SCHEMA = {
@@ -124,6 +127,10 @@ const TRANSCRIPTION_SCHEMA = {
       items: { type: 'STRING' },
       description: 'Other possible intended meanings, ranked by likelihood'
     },
+    reasoning_summary: {
+      type: 'STRING',
+      description: 'A short summary of how the phonetics were mapped to the intended meaning'
+    },
     detected_emotion: {
       type: 'STRING',
       enum: ['happy', 'sad', 'frustrated', 'neutral', 'urgent'],
@@ -131,7 +138,7 @@ const TRANSCRIPTION_SCHEMA = {
     }
   },
   required: ['phonetic_transcription', 'primary_transcription', 'confidence',
-             'language_detected', 'alternative_interpretations', 'detected_emotion']
+             'language_detected', 'alternative_interpretations', 'reasoning_summary', 'detected_emotion']
 };
 
 const CHAT_SCHEMA = {
@@ -247,7 +254,91 @@ async function executeWhoIAmTool(toolName, args, userId) {
 
 // ── Helper: build few-shot examples from corrections ──
 
-async function getCorrectionExamples(userId, limit = 10) {
+function normalizeCorrectionText(text = '') {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}'\s-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeCorrectionText(text = '') {
+  return normalizeCorrectionText(text).split(' ').filter(Boolean);
+}
+
+function buildCorrectionMetadata(heard, correct) {
+  const heardNormalized = normalizeCorrectionText(heard);
+  const correctNormalized = normalizeCorrectionText(correct);
+  const heardTokens = tokenizeCorrectionText(heard);
+  const correctTokens = tokenizeCorrectionText(correct);
+  const tokenDiffs = [];
+  const maxLength = Math.max(heardTokens.length, correctTokens.length);
+
+  for (let index = 0; index < maxLength; index++) {
+    const heardToken = heardTokens[index] || '';
+    const correctToken = correctTokens[index] || '';
+    if (heardToken !== correctToken) {
+      tokenDiffs.push({ index, heard: heardToken, correct: correctToken });
+    }
+  }
+
+  return {
+    heardNormalized,
+    correctNormalized,
+    correctionKind: tokenDiffs.length === 1 && heardTokens.length === correctTokens.length ? 'word' : 'phrase',
+    tokenDiffs,
+  };
+}
+
+function buildCorrectionPrompt(corrections) {
+  const filtered = corrections.filter(c => c.heard !== c.correct);
+  if (filtered.length === 0) return '';
+
+  const replacementMap = new Map();
+  for (const correction of filtered) {
+    const tokenDiffs = Array.isArray(correction.tokenDiffs)
+      ? correction.tokenDiffs
+      : buildCorrectionMetadata(correction.heard, correction.correct).tokenDiffs;
+    const count = correction.count || 1;
+
+    for (const diff of tokenDiffs) {
+      if (!diff.heard || !diff.correct) continue;
+      const key = `${diff.heard}->${diff.correct}`;
+      const existing = replacementMap.get(key) || {
+        heard: diff.heard,
+        correct: diff.correct,
+        count: 0,
+        exampleHeard: correction.heard,
+        exampleCorrect: correction.correct,
+      };
+      existing.count += count;
+      replacementMap.set(key, existing);
+    }
+  }
+
+  const replacementPatterns = [...replacementMap.values()]
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 12)
+    .map(pattern =>
+      `<pattern count="${pattern.count}">\n  <heard>${pattern.heard}</heard>\n  <correct>${pattern.correct}</correct>\n  <example_heard>${pattern.exampleHeard}</example_heard>\n  <example_correct>${pattern.exampleCorrect}</example_correct>\n</pattern>`
+    )
+    .join('\n');
+
+  const examples = filtered
+    .slice(0, 12)
+    .map(correction =>
+      `<example count="${correction.count || 1}">\n  <heard>${correction.heard}</heard>\n  <correct>${correction.correct}</correct>\n</example>`
+    )
+    .join('\n');
+
+  const replacementBlock = replacementPatterns
+    ? `\n<replacement_patterns>\nFrequent replacement patterns for this speaker. If the phonetics resemble the heard form, strongly consider the corrected form before inventing a new reading.\n${replacementPatterns}\n</replacement_patterns>`
+    : '';
+
+  return `${replacementBlock}\n<few_shot_corrections>\nThese are known corrections for this speaker. Use them to improve interpretation and word replacement suggestions.\n${examples}\n</few_shot_corrections>`;
+}
+
+async function getCorrectionExamples(userId, limit = 20) {
   if (!db) return '';
   const corrections = await db.collection('corrections')
     .find({ userId: new ObjectId(userId) })
@@ -255,13 +346,7 @@ async function getCorrectionExamples(userId, limit = 10) {
     .limit(limit)
     .toArray();
   if (corrections.length === 0) return '';
-  const examples = corrections
-    .filter(c => c.heard !== c.correct)
-    .map(c =>
-      `<example>\n  <heard>${c.heard}</heard>\n  <correct>${c.correct}</correct>\n</example>`
-    ).join('\n');
-  if (!examples) return '';
-  return `\n<few_shot_corrections>\nThese are known corrections for this speaker. Use them to improve interpretation.\n${examples}\n</few_shot_corrections>`;
+  return buildCorrectionPrompt(corrections);
 }
 
 // ── Helper: fetch audio samples for few-shot ──
@@ -359,14 +444,16 @@ function getTranscriptionConfig(mode = 'fast') {
       model: 'gemini-3.1-pro-preview',
       stage1Thinking: 'medium',
       stage2Thinking: 'high',
+      skipStage2: false,
       maxAudioSamples: Infinity, // all
     };
   }
   return {
-    model: 'gemini-3-flash-preview',
-    stage1Thinking: 'low',
+    model: 'gemini-3.1-pro-preview',
+    stage1Thinking: 'medium',
     stage2Thinking: 'medium',
-    maxAudioSamples: 10,
+    skipStage2: true,
+    maxAudioSamples: Infinity,
   };
 }
 
@@ -387,12 +474,17 @@ async function runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentT
     ? `\n<audio_references count="${audioSamples.length}">\nThe following are reference audio samples from this speaker, ordered chronologically (oldest first). Each has a verified transcript and may include a <transcription_log> showing the model's previous reasoning.\n\nIMPORTANT — Learn from the logs:\n- Read them in order. Notice how reasoning evolved across samples.\n- Where "heard" differs from "transcript", the initial guess was WRONG — avoid repeating that mistake.\n- Where phonetic patterns recur, build on successful reasoning strategies.\n- Use confidence trends to calibrate your own certainty.\n- The logs are YOUR past thinking — improve upon them each time.\n</audio_references>\n`
     : '';
 
+  const modeSpecificTask = mode === 'fast'
+    ? `\n<fast_mode>\nFast mode is a single-pass decode. Spend your internal reasoning budget refining the phonetic_transcription first, then map it to the most likely intended phrase using the correction patterns, recent context, and reference audio. There will be no second pass, so finalize your best resolved meaning now.\n</fast_mode>`
+    : `\n<deep_mode>\nDeep mode has a second refinement stage. Stage 1 should still produce the strongest possible phonetic read and a solid first interpretation for stage 2 to improve.\n</deep_mode>`;
+
   console.log(`Stage 1 [${mode}] — ${audioSamples.length} audio refs, model=${config.model}, thinking=${config.stage1Thinking}`);
 
-  const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}${chatContext}
+  const dynamicPrompt = `${correctionExamples}${fewShotIntro}${rollingContext}${chatContext}${modeSpecificTask}
 
 <task>
 Analyze the audio recording and produce your best interpretation of the speaker's intended meaning.
+Include a concise reasoning_summary that explains the phonetic-to-meaning mapping you used.
 Output structured JSON following the schema exactly.
 </task>`;
 
@@ -428,7 +520,11 @@ Output structured JSON following the schema exactly.
     ? await stage1Response.text()
     : stage1Response.text;
   const result = JSON.parse(stage1Text);
+  if (!stage1Thinking && result.reasoning_summary) {
+    stage1Thinking = result.reasoning_summary;
+  }
   result._thinking = stage1Thinking || undefined;
+  delete result.reasoning_summary;
 
   // Build debug info (text parts only, audio data replaced with placeholder)
   const debugAudioRefs = audioSamples.map(s => ({
@@ -436,6 +532,13 @@ Output structured JSON following the schema exactly.
     heard: s.heard || null,
     mimeType: s.mimeType,
     audioSizeKB: Math.round((s.base64Audio?.length || 0) * 0.75 / 1024),
+    transcriptionLog: s.transcriptionLog ? {
+      phonetic: s.transcriptionLog.phonetic || null,
+      stage1Thinking: s.transcriptionLog.stage1Thinking || null,
+      stage2Thinking: s.transcriptionLog.stage2Thinking || null,
+      alternatives: s.transcriptionLog.alternatives || [],
+      confidence: s.transcriptionLog.confidence ?? null,
+    } : null,
   }));
 
   return {
@@ -490,6 +593,7 @@ Please re-analyze with deeper reasoning. Consider:
 5. Known correction patterns from this speaker
 6. What would make semantic sense as a complete thought?
 
+Include a concise reasoning_summary that explains the final phonetic-to-meaning decision.
 Produce an improved structured JSON interpretation.
 </stage2_refinement>${correctionExamples}${fewShotIntro2}${rollingContext}${chatContext}`;
 
@@ -525,13 +629,24 @@ Produce an improved structured JSON interpretation.
     ? await stage2Response.text()
     : stage2Response.text;
   const result = JSON.parse(stage2Text);
+  if (!stage2Thinking && result.reasoning_summary) {
+    stage2Thinking = result.reasoning_summary;
+  }
   result._thinking = stage2Thinking || undefined;
+  delete result.reasoning_summary;
 
   const debugAudioRefs = audioSamples.map(s => ({
     transcript: s.transcript,
     heard: s.heard || null,
     mimeType: s.mimeType,
     audioSizeKB: Math.round((s.base64Audio?.length || 0) * 0.75 / 1024),
+    transcriptionLog: s.transcriptionLog ? {
+      phonetic: s.transcriptionLog.phonetic || null,
+      stage1Thinking: s.transcriptionLog.stage1Thinking || null,
+      stage2Thinking: s.transcriptionLog.stage2Thinking || null,
+      alternatives: s.transcriptionLog.alternatives || [],
+      confidence: s.transcriptionLog.confidence ?? null,
+    } : null,
   }));
 
   return {
@@ -549,7 +664,11 @@ Produce an improved structured JSON interpretation.
 
 // Combined pipeline (used by chat endpoint)
 async function runTranscriptionPipeline(ai, base64Audio, mimeType, userId, recentTranscriptions, mode = 'fast') {
+  const config = getTranscriptionConfig(mode);
   const { result: stage1 } = await runTranscriptionStage1(ai, base64Audio, mimeType, userId, recentTranscriptions, mode);
+  if (config.skipStage2) {
+    return { ...stage1, stage2Used: false };
+  }
   const { result: stage2 } = await runTranscriptionStage2(ai, base64Audio, mimeType, stage1, userId, recentTranscriptions, mode);
   return { ...stage2, stage2Used: true };
 }
@@ -635,7 +754,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const ai = getAiClient();
-    let { base64Audio, mimeType, userId, chatHistory, transcriptionText } = req.body || {};
+    let { base64Audio, mimeType, userId, chatHistory, transcriptionText, assistantMode = 'personal' } = req.body || {};
 
     if (!base64Audio && !transcriptionText) {
       return res.status(400).json({ error: "base64Audio or transcriptionText is required" });
@@ -686,7 +805,7 @@ app.post('/api/chat', async (req, res) => {
 
     const isNewSession = !chatHistory || chatHistory.length === 0;
 
-    const chatSystemInstruction = `<role>
+    const personalChatSystemInstruction = `<role>
 You are the personal AI companion for the account belonging to ${userName}. You are warm, patient, and
 respectful. You speak clearly and simply. The primary user (${userName}) may have a stroke and communicate
 through an assistive voice app — be understanding of any speech difficulties.
@@ -742,6 +861,34 @@ If the user asks who made this app, mention "Ian built this app!"
 ${isNewSession ? '7. IMPORTANT: This is the START of a new conversation. Read your memories first to check if there is anything you should bring up or act on.' : ''}
 </instructions>${correctionExamples}`;
 
+  const ptChatSystemInstruction = `<role>
+You are a personal physical therapy and speech practice coach for ${userName}.
+You compare the latest spoken attempt against the exercise or target phrase being practiced,
+then give clear, encouraging feedback.
+</role>
+
+<context_document>
+${contextDoc || 'No context document available yet.'}
+</context_document>
+
+<who_i_am>
+${whoIAmSummary || '(No stored profile yet.)'}
+</who_i_am>
+
+<instructions>
+1. Infer the current exercise or target phrase from recent chat history when possible.
+2. Compare the latest spoken attempt against that exercise or phrase.
+3. Respond in 2-4 short sections: what went well, one concrete tip, one best next exercise.
+4. If the user did well, congratulate them directly.
+5. If there is no clear exercise to compare against, ask one short clarifying question instead of guessing.
+6. Keep the tone warm, motivating, and clinically useful without sounding robotic.
+7. Prefer practical PT and speech therapy follow-ups: slower repetition, breath support, over-articulation, vowel shaping, phrase repetition.
+</instructions>${correctionExamples}`;
+
+  const chatSystemInstruction = assistantMode === 'pt'
+    ? ptChatSystemInstruction
+    : personalChatSystemInstruction;
+
     // Build chat history for context
     const historyParts = (chatHistory || []).map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -753,13 +900,37 @@ ${isNewSession ? '7. IMPORTANT: This is the START of a new conversation. Read yo
       {
         role: 'user',
         parts: [
-          { text: `[User said]: "${transcription.primary_transcription}"\n[Confidence: ${transcription.confidence}, Language: ${transcription.language_detected}, Emotion: ${transcription.detected_emotion}]\n\nRespond conversationally. Use your memory tools if relevant.` },
+          { text: assistantMode === 'pt'
+              ? `[Practice attempt]: "${transcription.primary_transcription}"\n[Confidence: ${transcription.confidence}, Language: ${transcription.language_detected}, Emotion: ${transcription.detected_emotion}]\n\nCompare this spoken attempt with the likely current exercise. Coach them, give one tip, and suggest the best next exercise.`
+              : `[User said]: "${transcription.primary_transcription}"\n[Confidence: ${transcription.confidence}, Language: ${transcription.language_detected}, Emotion: ${transcription.detected_emotion}]\n\nRespond conversationally. Use your memory tools if relevant.` },
         ],
       },
     ];
 
     // Track memory actions for the frontend
     const memoryActions = [];
+
+    if (assistantMode === 'pt') {
+      const response = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-3.1-pro-preview',
+        systemInstruction: chatSystemInstruction,
+        contents,
+        config: {
+          temperature: 0.7,
+          thinkingConfig: { thinkingLevel: 'medium' },
+        },
+      }));
+
+      const textPart = response.candidates?.[0]?.content?.parts?.find(part => part.text);
+      const finalText = textPart?.text || 'Nice work. Tell me which exercise you want to practice next.';
+
+      return res.json({
+        reply_text: finalText,
+        emotion_detected: transcription.detected_emotion || 'neutral',
+        transcription: transcription.primary_transcription,
+        memoryActions: [],
+      });
+    }
 
     // Tool-calling loop: keep calling until we get a text response
     const MAX_TOOL_ROUNDS = 5;
@@ -933,17 +1104,33 @@ app.post('/api/calibrate', async (req, res) => {
       return res.status(503).json({ error: "Database not available" });
     }
 
+    const correctionMetadata = buildCorrectionMetadata(heard, correct);
+
     // Store correction pair (only if heard differs from correct)
     if (heard !== correct) {
-      await db.collection('corrections').insertOne({
-        userId: new ObjectId(userId),
-        heard,
-        correct,
-        source: 'calibration',
-        language: language || 'english',
-        phraseId: phraseId || null,
-        timestamp: new Date()
-      });
+      await db.collection('corrections').updateOne(
+        {
+          userId: new ObjectId(userId),
+          heard: heard.trim(),
+          correct: correct.trim(),
+          source: 'calibration',
+          language: language || 'english',
+          phraseId: phraseId || null,
+        },
+        {
+          $set: {
+            timestamp: new Date(),
+            lastSeenAt: new Date(),
+            heardNormalized: correctionMetadata.heardNormalized,
+            correctNormalized: correctionMetadata.correctNormalized,
+            correctionKind: correctionMetadata.correctionKind,
+            tokenDiffs: correctionMetadata.tokenDiffs,
+          },
+          $setOnInsert: { firstSeenAt: new Date() },
+          $inc: { count: 1 },
+        },
+        { upsert: true }
+      );
     }
 
     // Store audio sample if provided
@@ -1098,14 +1285,30 @@ app.post('/api/corrections', async (req, res) => {
       return res.json({ success: true, skipped: true, reason: 'heard matches correct — no correction needed' });
     }
 
-    await db.collection('corrections').insertOne({
-      userId: new ObjectId(userId),
-      heard,
-      correct,
-      source: source || 'transcribe',
-      language: language || 'english',
-      timestamp: new Date()
-    });
+    const correctionMetadata = buildCorrectionMetadata(heard, correct);
+
+    await db.collection('corrections').updateOne(
+      {
+        userId: new ObjectId(userId),
+        heard: heard.trim(),
+        correct: correct.trim(),
+        source: source || 'transcribe',
+        language: language || 'english',
+      },
+      {
+        $set: {
+          timestamp: new Date(),
+          lastSeenAt: new Date(),
+          heardNormalized: correctionMetadata.heardNormalized,
+          correctNormalized: correctionMetadata.correctNormalized,
+          correctionKind: correctionMetadata.correctionKind,
+          tokenDiffs: correctionMetadata.tokenDiffs,
+        },
+        $setOnInsert: { firstSeenAt: new Date() },
+        $inc: { count: 1 },
+      },
+      { upsert: true }
+    );
 
     await db.collection('profiles').updateOne(
       { userId: new ObjectId(userId) },
@@ -1137,6 +1340,7 @@ app.get('/api/corrections/:userId', async (req, res) => {
       userId: c.userId.toString(),
       heard: c.heard,
       correct: c.correct,
+      count: c.count || 1,
       source: c.source,
       language: c.language,
       timestamp: c.timestamp,

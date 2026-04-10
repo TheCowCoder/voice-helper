@@ -12,6 +12,8 @@ export type AppMode = 'transcribe' | 'chat' | 'calibrate';
 
 export type TranscriptionMode = 'fast' | 'deep';
 
+export type AssistantMode = 'personal' | 'pt';
+
 // ── Transcription types ──
 
 export interface StructuredTranscription {

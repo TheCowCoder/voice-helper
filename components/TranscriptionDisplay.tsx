@@ -7,7 +7,7 @@ interface TranscriptionDisplayProps {
   text: string;
   onChange: (text: string) => void;
   structured?: StructuredTranscription;
-  onWordCorrection?: (original: string, corrected: string) => void;
+  onWordCorrection?: (original: string, corrected: string, wordIndex?: number) => void;
 }
 
 export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
@@ -17,12 +17,13 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
   onWordCorrection,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const replacementMode = Boolean(onWordCorrection && text);
 
   useEffect(() => {
-    if (textareaRef.current) {
+    if (!replacementMode && textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, []);
+  }, [replacementMode]);
 
   return (
     <div className="w-full flex-1 flex flex-col bg-white rounded-3xl shadow-lg border-4 border-slate-200 min-h-0 overflow-y-auto">
@@ -60,31 +61,30 @@ export const TranscriptionDisplay: React.FC<TranscriptionDisplayProps> = ({
         )}
       </div>
 
-      {/* Tap-to-correct word pills (shown above textarea) */}
-      {onWordCorrection && text && (
-        <div className="border-b-2 border-slate-100 bg-slate-50">
+      {replacementMode ? (
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <WordPills
             text={text}
             alternatives={structured?.alternative_interpretations}
             onCorrection={onWordCorrection}
+            onTextChange={onChange}
           />
-          <p className="text-lg sm:text-xl text-slate-400 px-5 pb-3 font-medium">Tap a word to highlight it — then pick a suggestion or type your own</p>
         </div>
+      ) : (
+        <textarea
+          id="transcription"
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => onChange(e.target.value)}
+          className="flex-1 w-full p-4 sm:p-8 text-3xl sm:text-4xl leading-tight text-slate-900 resize-none outline-none focus:bg-yellow-50 transition-colors font-medium"
+          placeholder="Transcription will appear here..."
+        />
       )}
-
-      <textarea
-        id="transcription"
-        ref={textareaRef}
-        value={text}
-        onChange={(e) => onChange(e.target.value)}
-        className="flex-1 w-full p-4 sm:p-8 text-3xl sm:text-4xl leading-tight text-slate-900 resize-none outline-none focus:bg-yellow-50 transition-colors font-medium"
-        placeholder="Transcription will appear here..."
-      />
 
       <div className="bg-slate-50 px-5 py-3 sm:px-6 sm:py-4 border-t border-slate-100 text-slate-400 text-lg sm:text-xl text-right shrink-0 font-medium">
         {structured?.phonetic_transcription
           ? `Phonetic: "${structured.phonetic_transcription}"`
-          : 'Tap text to edit'}
+          : replacementMode ? 'Tap a word to replace it' : 'Tap text to edit'}
       </div>
     </div>
   );

@@ -68,6 +68,7 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   const roundProgress = roundIndex; // phrases done in this sitting
   const roundLabel = getRoundLabel(round);
   const phrase = activePhrases[roundIndex] || PHRASES[0];
+  const isDeepMode = transcriptionMode === 'deep';
 
   // Load progress from server on mount
   useEffect(() => {
@@ -98,12 +99,15 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
   }, [userId]);
 
   const initSteps = useCallback(() => {
-    setSteps([
+    const nextSteps: TranscriptionStep[] = [
       { id: 'preprocess', label: 'Audio Preprocessing', status: 'pending', detail: 'Gain boost + dynamic compression via Web Audio' },
-      { id: 'stage1', label: 'Stage 1: Acoustic Transcription', status: 'pending', detail: 'Gemini 3 Flash — structured JSON, thinkingLevel: low' },
-      { id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' },
-    ]);
-  }, []);
+      { id: 'stage1', label: isDeepMode ? 'Stage 1: Acoustic Transcription' : 'Fast Transcription', status: 'pending', detail: isDeepMode ? 'Gemini 3.1 — strong phonetic first pass' : 'Gemini 3.1 single-pass phonetic + meaning decode' },
+    ];
+    if (isDeepMode) {
+      nextSteps.push({ id: 'refine', label: 'Stage 2: Semantic Refinement', status: 'pending', detail: 'Deep reasoning pass for best interpretation' });
+    }
+    setSteps(nextSteps);
+  }, [isDeepMode]);
 
   const updateStep = useCallback((id: string, status: TranscriptionStep['status'], detail?: string) => {
     setSteps(prev => prev.map(s => s.id === id ? { ...s, status, ...(detail !== undefined ? { detail } : {}) } : s));
@@ -128,27 +132,36 @@ export const CalibrationView: React.FC<CalibrationViewProps> = ({ userId, onClos
         setLastAudioBase64(base64Audio);
         setLastMimeType(blob.type);
 
-        // Stage 1: Acoustic transcription
         const stage1 = await geminiService.transcribeStage1(base64Audio, blob.type, userId, undefined, transcriptionMode, signal);
 
         updateStep('stage1', 'done', `Phonetic: "${stage1.phonetic_transcription}" — ${Math.round(stage1.confidence * 100)}% confidence`);
-        updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
 
-        // Stage 2: Semantic refinement
-        const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId, undefined, transcriptionMode, signal);
+        if (isDeepMode) {
+          updateStep('refine', 'active', 'Deep reasoning refinement in progress...');
 
-        updateStep('refine', 'done', result.structured
-          ? `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`
-          : undefined);
+          const result = await geminiService.transcribeStage2(base64Audio, blob.type, stage1, userId, undefined, transcriptionMode, signal);
 
-        setHeard(result.text);
-        setLastTranscriptionLog({
-          phonetic: stage1.phonetic_transcription || undefined,
-          stage1Thinking: (stage1 as any)._thinking || undefined,
-          stage2Thinking: (result as any)._thinking || undefined,
-          alternatives: stage1.alternative_interpretations || undefined,
-          confidence: result.structured?.confidence ?? stage1.confidence,
-        });
+          updateStep('refine', 'done', result.structured
+            ? `Refined to ${Math.round(result.structured.confidence * 100)}% confidence via deep reasoning`
+            : undefined);
+
+          setHeard(result.text);
+          setLastTranscriptionLog({
+            phonetic: stage1.phonetic_transcription || undefined,
+            stage1Thinking: (stage1 as any)._thinking || undefined,
+            stage2Thinking: (result as any)._thinking || undefined,
+            alternatives: stage1.alternative_interpretations || undefined,
+            confidence: result.structured?.confidence ?? stage1.confidence,
+          });
+        } else {
+          setHeard(stage1.primary_transcription);
+          setLastTranscriptionLog({
+            phonetic: stage1.phonetic_transcription || undefined,
+            stage1Thinking: (stage1 as any)._thinking || undefined,
+            alternatives: stage1.alternative_interpretations || undefined,
+            confidence: stage1.confidence,
+          });
+        }
       } catch (err) {
         if ((err as any)?.name === 'AbortError') {
           console.log('Calibration transcription aborted');

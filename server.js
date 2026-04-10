@@ -153,10 +153,10 @@ const WHO_I_AM_TOOLS = [
   },
   {
     name: 'write_personality',
-    description: 'Write or append to the personality section. Use when you learn something about who the user IS — their character, temperament, or self-image.',
+    description: 'REPLACE the entire personality section with updated content. Read first, then write back the COMPLETE updated section including existing facts plus any new information. Do not just write the new fact — include everything.',
     parameters: {
       type: 'object',
-      properties: { content: { type: 'string', description: 'New personality content to append' } },
+      properties: { content: { type: 'string', description: 'The complete updated personality section text' } },
       required: ['content'],
     },
   },
@@ -167,10 +167,10 @@ const WHO_I_AM_TOOLS = [
   },
   {
     name: 'write_interests',
-    description: 'Write or append to the interests section. Use when you learn about topics the user enjoys or cares about.',
+    description: 'REPLACE the entire interests section with updated content. Read first, then write back the COMPLETE updated section including existing facts plus any new information.',
     parameters: {
       type: 'object',
-      properties: { content: { type: 'string', description: 'New interest content to append' } },
+      properties: { content: { type: 'string', description: 'The complete updated interests section text' } },
       required: ['content'],
     },
   },
@@ -181,10 +181,10 @@ const WHO_I_AM_TOOLS = [
   },
   {
     name: 'write_personal_connections',
-    description: 'Write or append to personal connections. Use when you learn about a person in the user\'s life.',
+    description: 'REPLACE the entire personal connections section with updated content. Read first, then write back the COMPLETE updated section including existing people plus any new connections.',
     parameters: {
       type: 'object',
-      properties: { content: { type: 'string', description: 'New personal connection info to append' } },
+      properties: { content: { type: 'string', description: 'The complete updated personal connections section text' } },
       required: ['content'],
     },
   },
@@ -195,10 +195,10 @@ const WHO_I_AM_TOOLS = [
   },
   {
     name: 'write_memories',
-    description: 'Write or append to memories. Use when the user shares something you should remember for the future.',
+    description: 'REPLACE the entire memories section with updated content. Read first, then write back the COMPLETE updated section including existing memories plus any new ones. Remove outdated entries.',
     parameters: {
       type: 'object',
-      properties: { content: { type: 'string', description: 'New memory to append' } },
+      properties: { content: { type: 'string', description: 'The complete updated memories section text' } },
       required: ['content'],
     },
   },
@@ -232,10 +232,9 @@ async function executeWhoIAmTool(toolName, args, userId) {
     return { content };
   }
 
-  // Write: append new content
+  // Write: replace entire section with new content
   const newContent = args.content || '';
-  const existing = whoIAm[section] || '';
-  const updated = existing ? `${existing}\n- ${newContent}` : `- ${newContent}`;
+  const updated = newContent;
 
   await db.collection('profiles').updateOne(
     { userId: oid },
@@ -664,11 +663,13 @@ If the user asks who made this app, mention "Ian built this app!"
 1. First, interpret the audio transcription (may be imperfect due to dysarthria).
 2. Respond conversationally to the intended meaning.
 3. Keep responses concise (1-3 sentences).
-4. Use your memory tools actively:
+4. Use your memory tools actively — ALWAYS read a section BEFORE writing to it:
    - read_personality / write_personality for character traits
    - read_interests / write_interests for hobbies and likes
    - read_personal_connections / write_personal_connections for people in their life
    - read_memories / write_memories for events and things to remember
+   WRITE WORKFLOW: Read the section first, then write back the COMPLETE updated section
+   (existing content + new info merged together). Do NOT just write the new fact alone.
 5. If they seem frustrated or in distress, acknowledge it empathetically.
 6. When calling tools, be genuine about it — you truly want to remember.
 ${isNewSession ? '7. IMPORTANT: This is the START of a new conversation. Read your memories first to check if there is anything you should bring up or act on.' : ''}
@@ -865,16 +866,18 @@ app.post('/api/calibrate', async (req, res) => {
       return res.status(503).json({ error: "Database not available" });
     }
 
-    // Store correction pair
-    await db.collection('corrections').insertOne({
-      userId: new ObjectId(userId),
-      heard,
-      correct,
-      source: 'calibration',
-      language: language || 'english',
-      phraseId: phraseId || null,
-      timestamp: new Date()
-    });
+    // Store correction pair (only if heard differs from correct)
+    if (heard !== correct) {
+      await db.collection('corrections').insertOne({
+        userId: new ObjectId(userId),
+        heard,
+        correct,
+        source: 'calibration',
+        language: language || 'english',
+        phraseId: phraseId || null,
+        timestamp: new Date()
+      });
+    }
 
     // Store audio sample if provided
     if (audioBase64) {
@@ -936,6 +939,10 @@ app.post('/api/corrections', async (req, res) => {
 
     if (!db) {
       return res.status(503).json({ error: "Database not available" });
+    }
+
+    if (heard === correct) {
+      return res.json({ success: true, skipped: true, reason: 'heard matches correct — no correction needed' });
     }
 
     await db.collection('corrections').insertOne({
